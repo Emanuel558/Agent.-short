@@ -9,8 +9,26 @@ export interface ProviderInfo {
   configured: boolean;
   detail: string;
 }
-export function providerInfo(): ProviderInfo {
-  const id = process.env.AI_PROVIDER || "demo";
+export function providerInfo(
+  id: string = process.env.AI_PROVIDER || "demo",
+): ProviderInfo {
+  if (id === "gemini")
+    return {
+      id,
+      label: "Google Gemini",
+      configured: !!process.env.GEMINI_API_KEY,
+      detail: process.env.GEMINI_API_KEY
+        ? "Cloud AI · gemini-2.5-flash by default (server-configurable). Free-tier limits and model availability depend on Google. Review facts before use."
+        : "Add GEMINI_API_KEY as a server-side Codespaces secret or in .env.local, then restart. No billing is enabled by the app.",
+    };
+  if (id === "ollama")
+    return {
+      id,
+      label: "Ollama (local)",
+      configured: true,
+      detail:
+        "Optional inference on your model server. Requires Ollama running with OLLAMA_MODEL (default llama3.2). Selecting this does not install or start it.",
+    };
   if (id === "demo")
     return {
       id,
@@ -43,6 +61,6 @@ export function providerInfo(): ProviderInfo {
     label: "Provider unavailable",
     configured: false,
     detail:
-      "AI_PROVIDER must be demo or openai-compatible. Update the server environment.",
+      "AI_PROVIDER must be gemini, ollama, demo, or openai-compatible. Update the server environment.",
   };
 }

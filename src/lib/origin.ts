@@ -47,7 +47,10 @@ export function configuredAppOrigin(): string | null {
 
 export function assertSameOrigin(request: Request): void {
   const forbidden = () =>
-    new AppError(403, "Cross-site requests are not allowed.");
+    new AppError(
+      403,
+      "Cross-site requests are not allowed. Open this Codespace’s private port 3000 URL, or set server-side APP_ORIGIN to the exact app origin and restart Next.js.",
+    );
   if (request.headers.get("sec-fetch-site") === "cross-site") throw forbidden();
   const supplied = request.headers.get("origin");
   // Non-browser tools can omit Origin, as before. JSON-only bodies and Fetch

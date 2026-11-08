@@ -19,7 +19,7 @@ export class ProjectRepository {
       id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
       version INTEGER NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL,
       document TEXT NOT NULL, UNIQUE(project_id, version)
-    ); CREATE INDEX IF NOT EXISTS revision_project ON revisions(project_id, id);`);
+    ); CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE INDEX IF NOT EXISTS revision_project ON revisions(project_id, id);`);
   }
   private read(id: string): Project {
     const row = this.db
@@ -127,6 +127,19 @@ export class ProjectRepository {
       createdAt: r.created_at,
       project: JSON.parse(r.document),
     }));
+  }
+  getSetting(key: string): string | undefined {
+    return (
+      this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
+        { value: string } | undefined
+    )?.value;
+  }
+  setSetting(key: string, value: string) {
+    this.db
+      .prepare(
+        "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run(key, value);
   }
   close() {
     this.db.close();

@@ -1,3 +1,6 @@
+import { GeminiProvider } from "../providers/gemini";
+import { OllamaProvider } from "../providers/ollama";
+import { validateGenerated } from "../providers/output";
 import { AppError } from "../errors";
 import { ProjectRepository } from "../db";
 import { DemoProvider } from "../providers/demo";
@@ -41,11 +44,17 @@ export async function generateProject(
   const current = repo.get(id);
   if (current.status === "generating")
     throw new AppError(409, "This project is already generating.");
-  const info = providerInfo();
+  const info = providerInfo(repo.getSetting("text-provider"));
   if (!override && !info.configured) throw new AppError(503, info.detail);
   const provider =
     override ||
-    (info.id === "demo" ? new DemoProvider() : new OpenAICompatibleProvider());
+    (info.id === "demo"
+      ? new DemoProvider()
+      : info.id === "gemini"
+        ? new GeminiProvider()
+        : info.id === "ollama"
+          ? new OllamaProvider()
+          : new OpenAICompatibleProvider());
   const started = repo.update(
     id,
     version,
@@ -54,6 +63,7 @@ export async function generateProject(
   );
   try {
     const scenes = await provider.generate(current);
+    validateGenerated(scenes, current);
     return repo.update(
       id,
       started.version,

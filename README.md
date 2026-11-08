@@ -33,28 +33,49 @@ Codespaces has account-specific included usage and storage limits; it is not unl
 
 Project format, language, topic, and target duration are fixed after creation in Phase 1. Create another project to change the brief. Script text is assembled from scene narration, so the script and scene plan stay consistent. Duration values are editorial planning targets, not measured audio or rendered video lengths. Long demo outlines are intentionally sparse, not full-length narration.
 
-## Optional AI model
+## Gemini cloud AI, optional Ollama, and Demo
 
-The basic demo works offline after dependencies are installed. For real model generation, configure an **OpenAI-compatible `/v1/chat/completions` service** on the server. It must support JSON object responses. Provider failures show an error; the app never silently substitutes demo output.
+**Settings → Script provider → Save provider** chooses Gemini, Ollama, or Demo. This choice persists in SQLite and takes precedence over `AI_PROVIDER`. Changing selection does not rewrite projects or history. Each script retains the provider that generated it. Selecting a provider does not send a request; **Generate AI script** does. Demo remains the initial no-key default unless `AI_PROVIDER` is configured.
 
-In the Codespaces terminal:
+### Gemini setup (all inside Codespaces)
 
-```sh
-cp .env.example .env.local
-```
+1. Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/api-keys) for a project using Google's free tier. Do not enable or upgrade billing if you only want free usage. Eligibility and quotas depend on Google; Codespaces itself also has account usage limits.
+2. Add a **Codespaces secret** named `GEMINI_API_KEY` with access to this repository, then restart the Codespace. Alternatively, add the key to ignored `.env.local` using the browser editor. Do not paste it in chat, Settings, Git, or a `NEXT_PUBLIC_` variable. Preserve any existing `.env.local` contents.
+3. The server defaults to the requested model. Optional environment values:
 
-Edit `.env.local` in the browser editor:
+   ```dotenv
+   AI_PROVIDER=gemini
+   GEMINI_MODEL=gemini-2.5-flash
+   # GEMINI_API_KEY is supplied as a Codespaces secret or in .env.local
+   ```
+
+4. Restart Next.js after adding secrets, then select **Google Gemini** in Settings and save. Create/reopen a project and generate a draft. Edit, fact-check, save, reopen, and export as before.
+
+The adapter calls the **official Gemini REST `generateContent` API** with structured JSON output. Keys are sent only in a server-side `x-goog-api-key` header to Google's fixed HTTPS endpoint. It uses a 60-second timeout, validates scene structure, nonempty narration/visuals and exact duration totals, and saves only validated output. Quota errors, unavailable models, access failures, blocked content and truncated responses are shown clearly. Failed generation preserves the existing script and history. No automatic retries, model upgrades, cloud fallback, or billing setup are performed.
+
+**Availability limitation:** Google's current [model pricing documentation](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash) marks `gemini-2.5-flash` deprecated and announces provider-side rerouting from December 1, 2026. We retain your requested ID as the default. The app cannot control Google's aliases or detect whether your Google project already has billing. Check the current model availability and pricing for your account before use; a billed project can incur charges. You can explicitly set `GEMINI_MODEL` to another supported model or select Demo. The app never changes model IDs automatically.
+
+The [Gemini API reference](https://ai.google.dev/api/generate-content) and [structured output guide](https://ai.google.dev/gemini-api/docs/structured-output) describe the official protocol. Live Gemini access has not been verified with your key; tests mock Google's HTTP responses. No key is bundled.
+
+### Ollama (optional local inference)
+
+Ollama uses its native `/api/chat` structured-output endpoint. Configure server-side:
 
 ```dotenv
-AI_PROVIDER=openai-compatible
-AI_BASE_URL=http://127.0.0.1:11434/v1
-AI_MODEL=llama3.2
-# AI_API_KEY=only-if-your-provider-requires-it
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.2
 ```
 
-The example URL requires an Ollama server with that model already running **inside that Codespace**. It is not installed by this repository. Ollama is free and open-source; model hardware requirements may exceed a small Codespace. You can also use a compatible model server you control. Hosted API services can charge fees. Model availability and live model output have not been verified for your account; the adapter is tested with mocked HTTP responses. Real AI claims require human fact-checking.
+You must separately start Ollama and pull the model **on the Codespace or server you control**, never on your school computer. Nothing is installed automatically. Small Codespaces may lack the RAM/CPU for a model, and inference can exceed the timeout. A localhost address refers to the Codespace, not your school computer. Select Ollama in Settings and save; if it is unreachable, an explicit error is shown. Demo needs no server or key.
 
-Restart `npm run dev` after changing configuration. Keep API keys in `.env.local` or Codespaces secrets, never in chat, source code, or variables prefixed `NEXT_PUBLIC_`. Settings reports configuration status without revealing keys, model endpoints, or credentials. In the Codespaces environment, requests reach the provider from the server; a localhost URL on your school computer is not reachable.
+The earlier `AI_PROVIDER=openai-compatible`, `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` configuration is retained for compatibility. Existing projects and revisions generated with it remain readable.
+
+### Recover Demo generation
+
+Select **Demo** in Settings and save. It works independently of Gemini/Ollama configuration and performs no model network calls. Output remains a clearly labeled outline, not researched AI narration. Valid unsaved edits are now saved before generating; an edited title no longer silently disables generation. Invalid scene timing still produces an error without replacing your script.
+
+If you see **Cross-site requests are not allowed**, generation has not reached any provider. Pull the latest Phase 1 branch and restart the correct checkout (see restart steps below). Use private forwarded port 3000. For a different forwarded port or proxy address, set `APP_ORIGIN` in `.env.local` to the **exact browser origin**, such as `https://your-codespace-name-3001.app.github.dev`, then restart. Never use a wildcard or disable origin checks. The same setting controls development/HMR access.
 
 ## Data and privacy
 
@@ -85,17 +106,17 @@ GitHub Actions runs Vitest, TypeScript checks, a production build, and Chromium 
 
 ## Architecture
 
-| Location                        | Responsibility                                                             |
-| ------------------------------- | -------------------------------------------------------------------------- |
-| `src/app`                       | Next.js shell, Tailwind styles, API route handlers                         |
-| `src/components/workspace.tsx`  | Dashboard, project creation, script editor, history, settings              |
-| `src/lib/schema.ts`             | Shared strict validation and domain types                                  |
-| `src/lib/db.ts`                 | SQLite repository, atomic updates and revisions, optimistic version checks |
-| `src/lib/services/projects.ts`  | Generation lifecycle and saving rules                                      |
-| `src/lib/providers`             | Replaceable text interface, demo provider and compatible-model adapter     |
-| `src/lib/services/contracts.ts` | Unimplemented future voice, research and media service boundaries          |
-| `tests`                         | Vitest domain/provider/API-boundary tests and Playwright browser tests     |
-| `.devcontainer`                 | Browser-only Codespaces setup                                              |
+| Location                        | Responsibility                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `src/app`                       | Next.js shell, Tailwind styles, API route handlers                             |
+| `src/components/workspace.tsx`  | Dashboard, project creation, script editor, history, settings                  |
+| `src/lib/schema.ts`             | Shared strict validation and domain types                                      |
+| `src/lib/db.ts`                 | SQLite repository, atomic updates and revisions, optimistic version checks     |
+| `src/lib/services/projects.ts`  | Generation lifecycle and saving rules                                          |
+| `src/lib/providers`             | Replaceable text interface, Gemini, Ollama, Demo and compatible-model adapters |
+| `src/lib/services/contracts.ts` | Unimplemented future voice, research and media service boundaries              |
+| `tests`                         | Vitest domain/provider/API-boundary tests and Playwright browser tests         |
+| `.devcontainer`                 | Browser-only Codespaces setup                                                  |
 
 REST endpoints: `GET/POST /api/projects`, `GET/PUT /api/projects/:id`, `POST /api/projects/:id/generate`, `GET /api/projects/:id/history`, `GET /api/projects/:id/export?format=json|txt`, and `GET /api/provider`.
 

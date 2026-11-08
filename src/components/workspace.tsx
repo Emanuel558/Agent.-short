@@ -310,7 +310,7 @@ export function Workspace() {
               go={go}
             />
           ) : view === "settings" ? (
-            <Settings provider={provider} />
+            <Settings provider={provider} onUpdated={refresh} />
           ) : (
             <FutureFeature feature={current} go={go} />
           )}
@@ -1075,10 +1075,21 @@ function ProjectEditor({
     setBusy("generate");
     setError("");
     setNotice("");
+    let requestStarted = false;
     try {
+      let saved = project;
+      if (dirty) {
+        saved = await api<Project>(`/api/projects/${id}`, "PUT", {
+          title,
+          scenes,
+          version: project.version,
+        });
+        accept(saved);
+      }
+      requestStarted = true;
       accept(
         await api<Project>(`/api/projects/${id}/generate`, "POST", {
-          version: project.version,
+          version: saved.version,
         }),
       );
       setNotice("Script saved. Review the draft and make it your own.");
@@ -1086,7 +1097,13 @@ function ProjectEditor({
     } catch (e) {
       setError((e as Error).message);
       try {
-        accept(await api<Project>(`/api/projects/${id}`));
+        const latest = await api<Project>(`/api/projects/${id}`);
+        if (
+          requestStarted &&
+          latest.version > project.version &&
+          latest.status !== "generating"
+        )
+          accept(latest);
         onChange();
       } catch {
         /* preserve local state */
@@ -1288,7 +1305,7 @@ function ProjectEditor({
                     </div>
                   </div>
                 )}
-                {project.provider === "openai-compatible" && (
+                {project.provider !== null && project.provider !== "demo" && (
                   <div className="demo-banner">
                     <Sparkles size={17} />
                     <div>
@@ -1312,7 +1329,7 @@ function ProjectEditor({
                     </p>
                     <button
                       className="primary"
-                      disabled={locked || dirty || !provider?.configured}
+                      disabled={locked || !provider?.configured}
                       onClick={() => void generate()}
                     >
                       {busy === "generate" ||
@@ -1328,7 +1345,7 @@ function ProjectEditor({
                           : "Generate AI script"}
                     </button>
                     {dirty && (
-                      <small>Save your project name before generating.</small>
+                      <small>Edits will be saved before generation.</small>
                     )}
                   </div>
                 ) : (
@@ -1481,7 +1498,7 @@ function ProjectEditor({
             <p>{provider?.detail || "Checking text provider…"}</p>
             <button
               className="subtle-button full-width"
-              disabled={locked || dirty || !provider?.configured}
+              disabled={locked || !provider?.configured}
               onClick={() => void generate()}
             >
               {busy === "generate" || project.status === "generating" ? (
@@ -1497,7 +1514,7 @@ function ProjectEditor({
             </button>
             {dirty && (
               <small className="muted">
-                Save edits before generating again.
+                Edits are saved to history before generating again.
               </small>
             )}
             {project.error && <p className="error-text">{project.error}</p>}
@@ -1533,7 +1550,32 @@ function ProjectEditor({
     </>
   );
 }
-function Settings({ provider }: { provider: ProviderInfo | null }) {
+function Settings({
+  provider,
+  onUpdated,
+}: {
+  provider: ProviderInfo | null;
+  onUpdated: () => Promise<void>;
+}) {
+  const [choice, setChoice] = useState<string>(provider?.id || "demo");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    if (provider) setChoice(provider.id);
+  }, [provider]);
+  async function selectProvider() {
+    setSaving(true);
+    setMessage("");
+    try {
+      await api("/api/provider", "PUT", { provider: choice });
+      await onUpdated();
+      setMessage("Provider saved. Future generation uses this selection.");
+    } catch (e) {
+      setMessage((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <>
       <Heading
@@ -1554,32 +1596,67 @@ function Settings({ provider }: { provider: ProviderInfo | null }) {
             </span>
           </div>
           <p>{provider?.detail}</p>
-          <h3>Configure in Codespaces</h3>
-          <ol>
-            <li>
-              Copy <code>.env.example</code> to <code>.env.local</code>.
-            </li>
-            <li>
-              Use <code>AI_PROVIDER=demo</code> for the free, offline workflow.
-            </li>
-            <li>
-              To use your own model, select <code>openai-compatible</code> and
-              set <code>AI_BASE_URL</code> and <code>AI_MODEL</code>. Set{" "}
-              <code>AI_API_KEY</code> only if your server requires it.
-            </li>
-            <li>
-              Restart the development server after changing environment
-              variables.
-            </li>
-          </ol>
-          <div className="note-card">
-            <p>
-              Ollama is a free model-server option in a separate Codespace or a
-              server you control. Running models requires enough memory and
-              compute. Hosted APIs may charge fees. No live model is bundled or
-              required.
-            </p>
-          </div>
+          <label>
+            Script provider
+            <select
+              aria-label="Script provider"
+              value={choice}
+              onChange={(e) => setChoice(e.target.value)}
+              disabled={saving || !provider}
+            >
+              <option value="gemini">Google Gemini · cloud</option>
+              <option value="ollama">Ollama · optional local inference</option>
+              <option value="demo">Demo · offline templates</option>
+              <option value="openai-compatible">
+                OpenAI-compatible · legacy configuration
+              </option>
+            </select>
+          </label>
+          <button
+            className="primary"
+            style={{ marginTop: 16 }}
+            disabled={saving || !provider || choice === "invalid"}
+            onClick={() => void selectProvider()}
+          >
+            {saving ? <Spinner /> : <Check size={16} />}Save provider
+          </button>
+          {message && <p role="status">{message}</p>}
+          <h3>Gemini setup in Codespaces</h3>
+          <p>
+            Create a key in{" "}
+            <a
+              href="https://aistudio.google.com/api-keys"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Google AI Studio
+            </a>
+            . Add it as <code>GEMINI_API_KEY</code> in Codespaces secrets or{" "}
+            <code>.env.local</code>. Restart Next.js, select Gemini, then save.
+            Never paste keys into this page or commit them.
+          </p>
+          <p>
+            The default model is <code>gemini-2.5-flash</code>; override with
+            server-only <code>GEMINI_MODEL</code>. Google marks this model
+            deprecated and may reroute aliases. Check its current model/pricing
+            documentation before use. Free access depends on your account and
+            quota. This app does not enable billing or change models
+            automatically. If your Google project already has billing, requests
+            may incur charges.
+          </p>
+          <h3>Ollama (optional)</h3>
+          <p>
+            Requires your own running model server. Configure{" "}
+            <code>OLLAMA_BASE_URL</code> (default localhost:11434) and{" "}
+            <code>OLLAMA_MODEL</code> (default llama3.2) on the server. No model
+            is bundled or installed automatically.
+          </p>
+          <h3>Demo recovery</h3>
+          <p>
+            Select Demo and save to generate free templates without any key or
+            model server, even if Gemini or Ollama is unavailable. Output is
+            labeled as a template, not researched AI content.
+          </p>
         </section>
         <section className="panel settings-panel">
           <span className="stat-icon blue">

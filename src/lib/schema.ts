@@ -53,7 +53,7 @@ export const versionSchema = z
 export type Brief = z.infer<typeof briefSchema>;
 export type Scene = z.infer<typeof sceneSchema>;
 export type ProjectStatus = "draft" | "generating" | "script_ready" | "failed";
-export type ProviderId = "demo" | "openai-compatible";
+export type ProviderId = "demo" | "gemini" | "ollama" | "openai-compatible";
 export interface Project extends Brief {
   id: string;
   scenes: Scene[];

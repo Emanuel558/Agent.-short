@@ -254,3 +254,52 @@ test("hydration mismatches inside the application are still reported", async ({
     page.getByRole("heading", { name: "Let’s make something great." }),
   ).toBeVisible();
 });
+
+test("Settings provider choice persists and Demo generates after editing a project name", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/?view=settings");
+  await expect(
+    page.getByRole("heading", { name: "Text generation", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Script provider").selectOption("gemini");
+  await page
+    .getByRole("button", { name: "Save provider", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Provider saved");
+  await page.reload();
+  await expect(page.getByLabel("Script provider")).toHaveValue("gemini");
+  const publicInfo = await (await request.get("/api/provider")).json();
+  expect(publicInfo.id).toBe("gemini");
+  expect(publicInfo).not.toHaveProperty("key");
+  await page.getByLabel("Script provider").selectOption("demo");
+  await page
+    .getByRole("button", { name: "Save provider", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Provider saved");
+  const response = await request.post("/api/projects", {
+    data: {
+      title: "Demo recovery",
+      topic: "Original storytelling",
+      language: "en",
+      format: "short",
+      duration: 30,
+    },
+  });
+  const p = await response.json();
+  await page.goto(`/?view=studio&project=${p.id}`);
+  await page
+    .getByLabel("Project name", { exact: true })
+    .fill("Renamed before generation");
+  await page
+    .getByRole("button", { name: "Generate demo script", exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByText("Template demo · no AI model or research used"),
+  ).toBeVisible();
+  const saved = await (await request.get(`/api/projects/${p.id}`)).json();
+  expect(saved.title).toBe("Renamed before generation");
+  expect(saved.status).toBe("script_ready");
+});
