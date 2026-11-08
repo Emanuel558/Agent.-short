@@ -1,3 +1,4 @@
+import { configuredGeminiModel } from "./gemini-api";
 import type { Brief, ProviderId, Scene } from "../schema";
 export interface TextProvider {
   readonly id: ProviderId;
@@ -14,18 +15,33 @@ export interface ProviderInfo {
 }
 export function providerInfo(
   id: string = process.env.AI_PROVIDER || "demo",
+  modelOverride?: string,
 ): ProviderInfo {
-  if (id === "gemini")
+  if (id === "gemini") {
+    let model: string;
+    try {
+      model = configuredGeminiModel(modelOverride);
+    } catch {
+      return {
+        id,
+        label: "Google Gemini",
+        configured: false,
+        keyConfigured: !!process.env.GEMINI_API_KEY?.trim(),
+        detail:
+          "GEMINI_MODEL is invalid. Use a model ID, or discover and save an eligible model below. Demo remains available.",
+      };
+    }
     return {
       id,
       label: "Google Gemini",
       configured: !!process.env.GEMINI_API_KEY?.trim(),
       keyConfigured: !!process.env.GEMINI_API_KEY?.trim(),
-      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      model,
       detail: process.env.GEMINI_API_KEY?.trim()
-        ? "Cloud AI · gemini-2.5-flash by default (server-configurable). Free-tier limits and model availability depend on Google. Review facts before use."
-        : "Add GEMINI_API_KEY as a server-side Codespaces secret or in .env.local, then restart. No billing is enabled by the app.",
+        ? "Cloud AI. Discover models available to this key before selecting a replacement. Free-tier quotas and billing remain controlled by Google."
+        : "Add GEMINI_API_KEY as a server-side Codespaces secret or in .env.local. No billing is enabled by the app.",
     };
+  }
   if (id === "ollama")
     return {
       id,

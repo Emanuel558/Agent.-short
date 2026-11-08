@@ -141,6 +141,9 @@ export class ProjectRepository {
       )
       .run(key, value);
   }
+  deleteSetting(key: string) {
+    this.db.prepare("DELETE FROM settings WHERE key = ?").run(key);
+  }
   close() {
     this.db.close();
   }

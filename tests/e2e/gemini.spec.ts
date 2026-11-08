@@ -98,8 +98,8 @@ test("Gemini usage-limit errors reach the browser without losing saved scripts",
     .getByRole("button", { name: "Generate with Gemini", exact: true })
     .click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "quota or rate limit" }),
-  ).toContainText("quota or rate limit");
+    page.getByRole("alert").filter({ hasText: "Quota or rate limit" }),
+  ).toContainText("Quota or rate limit");
   const failed = await (
     await request.get(`/api/projects/${project.id}`)
   ).json();
@@ -115,4 +115,72 @@ test("Gemini usage-limit errors reach the browser without losing saved scripts",
     ),
   ).toBe(true);
   await request.put("/api/provider", { data: { provider: "demo" } });
+});
+
+test("discover and explicitly save a free-tier candidate, then generate without changing keys", async ({
+  page,
+  request,
+}) => {
+  const p = await (
+    await request.post("/api/projects", {
+      data: {
+        title: "Discovered model test",
+        topic: "Original creative storytelling",
+        language: "en",
+        format: "short",
+        duration: 60,
+      },
+    })
+  ).json();
+  await page.goto(`/?view=studio&project=${p.id}`);
+  await page
+    .getByRole("button", { name: "Check available Gemini models", exact: true })
+    .click();
+  await expect(
+    page.getByText("Recommended candidate:", { exact: false }),
+  ).toContainText("gemini-2.5-flash-lite");
+  await expect(
+    page
+      .getByLabel("Available free-tier model")
+      .getByRole("option", { name: "unknown-priced-model", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByLabel("Available free-tier model")
+    .selectOption("gemini-2.5-flash-lite");
+  await page
+    .getByRole("button", { name: "Save Gemini model", exact: true })
+    .click();
+  await expect(page.getByTestId("gemini-key-status")).toContainText(
+    "gemini-2.5-flash-lite",
+  );
+  await page.getByLabel("Script provider").selectOption("gemini");
+  await page
+    .getByRole("button", { name: "Save provider", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Provider saved" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Generate with Gemini", exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByText("Gemini-generated draft · review required"),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("gemini-key-status")).toContainText(
+    "gemini-2.5-flash-lite",
+  );
+  expect(await (await request.get("/api/provider")).text()).not.toContain(
+    "autotube-e2e-gemini-key",
+  );
+  await page
+    .getByRole("button", {
+      name: "Use server GEMINI_MODEL setting",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByTestId("gemini-key-status")).toContainText(
+    "gemini-2.5-flash.",
+  );
 });

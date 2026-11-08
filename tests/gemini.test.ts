@@ -66,9 +66,9 @@ describe("Gemini official API", () => {
     expect(mock).not.toHaveBeenCalled();
   });
   it.each([
-    [429, "quota"],
-    [404, "model unavailable"],
-    [400, "model unavailable"],
+    [429, "Quota"],
+    [404, "not found"],
+    [400, "generation parameters"],
     [403, "API key"],
     [503, "temporarily unavailable"],
   ])(
@@ -120,11 +120,13 @@ describe("Gemini official API", () => {
     );
   });
   it("supports an explicit model override without automatic fallback", async () => {
-    vi.stubEnv("GEMINI_MODEL", "chosen-model");
+    vi.stubEnv("GEMINI_MODEL", "gemini-2.5-flash-lite");
     const mock = vi.fn().mockResolvedValue(success());
     vi.stubGlobal("fetch", mock);
     await new GeminiProvider().generate(brief);
-    expect(mock.mock.calls[0][0]).toContain("/chosen-model:generateContent");
+    expect(mock.mock.calls[0][0]).toContain(
+      "/gemini-2.5-flash-lite:generateContent",
+    );
   });
 });
 it("uses Ollama native structured JSON API only when selected", async () => {
@@ -254,7 +256,7 @@ it("does not log credentials when the upstream fails or echoes sensitive details
         .fn()
         .mockResolvedValue(new Response("test-server-secret", { status: 429 })),
     );
-    await expect(new GeminiProvider().generate(brief)).rejects.toThrow("quota");
+    await expect(new GeminiProvider().generate(brief)).rejects.toThrow("Quota");
     expect(
       JSON.stringify([
         ...log.mock.calls,

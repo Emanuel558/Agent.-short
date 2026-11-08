@@ -11,13 +11,39 @@ globalThis.fetch = async function (input, init) {
   const url = new URL(address);
   if (url.hostname !== "generativelanguage.googleapis.com")
     return originalFetch(input, init);
-  if (url.pathname !== "/v1beta/models/gemini-2.5-flash:generateContent")
-    return new Response("", { status: 404 });
   if (
     new Headers(init?.headers).get("x-goog-api-key") !==
     "autotube-e2e-gemini-key"
   )
     throw new Error("Invalid test Gemini credentials");
+  if (url.pathname === "/v1beta/models")
+    return Response.json({
+      models: [
+        {
+          name: "models/gemini-2.5-flash-lite",
+          supportedGenerationMethods: ["generateContent", "countTokens"],
+        },
+        {
+          name: "models/gemini-2.5-flash",
+          supportedGenerationMethods: ["generateContent"],
+        },
+        {
+          name: "models/embedding-only",
+          supportedGenerationMethods: ["embedContent"],
+        },
+        {
+          name: "models/unknown-priced-model",
+          supportedGenerationMethods: ["generateContent"],
+        },
+      ],
+    });
+  if (
+    ![
+      "/v1beta/models/gemini-2.5-flash:generateContent",
+      "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+    ].includes(url.pathname)
+  )
+    return Response.json({ error: { status: "NOT_FOUND" } }, { status: 404 });
   const payload = JSON.parse(init.body);
   if (payload.generationConfig?.responseMimeType !== "application/json")
     throw new Error("Expected structured Gemini output");

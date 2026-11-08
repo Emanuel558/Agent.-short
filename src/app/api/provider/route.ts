@@ -6,9 +6,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 function settings() {
   return {
-    ...providerInfo(repository().getSetting("text-provider")),
+    ...providerInfo(
+      repository().getSetting("text-provider"),
+      repository().getSetting("gemini-model"),
+    ),
     options: ["gemini", "ollama", "demo", "openai-compatible"].map((id) =>
-      providerInfo(id),
+      providerInfo(id, repository().getSetting("gemini-model")),
     ),
   };
 }

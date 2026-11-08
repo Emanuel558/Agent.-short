@@ -44,14 +44,17 @@ export async function generateProject(
   const current = repo.get(id);
   if (current.status === "generating")
     throw new AppError(409, "This project is already generating.");
-  const info = providerInfo(repo.getSetting("text-provider"));
+  const info = providerInfo(
+    repo.getSetting("text-provider"),
+    repo.getSetting("gemini-model"),
+  );
   if (!override && !info.configured) throw new AppError(503, info.detail);
   const provider =
     override ||
     (info.id === "demo"
       ? new DemoProvider()
       : info.id === "gemini"
-        ? new GeminiProvider()
+        ? new GeminiProvider(repo.getSetting("gemini-model"))
         : info.id === "ollama"
           ? new OllamaProvider()
           : new OpenAICompatibleProvider());

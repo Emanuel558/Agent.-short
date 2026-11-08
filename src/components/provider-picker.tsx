@@ -1,4 +1,5 @@
 "use client";
+import { GeminiModels } from "./gemini-models";
 import { useState } from "react";
 import type { ProviderInfo } from "@/lib/providers/text";
 
@@ -77,11 +78,16 @@ export function ProviderPicker({
         <p className="small-text" data-testid="gemini-key-status">
           Gemini API key:{" "}
           {gemini.keyConfigured ? "loaded on server" : "not loaded on server"}.
-          Model: {gemini.model}.{" "}
+          Model: {gemini.model || "invalid server model setting"}.{" "}
           {!gemini.keyConfigured &&
             "Allow this repository to use your Codespaces secret, then stop and reopen the Codespace. Never paste the key here."}
         </p>
       )}
+      <GeminiModels
+        keyConfigured={!!gemini?.keyConfigured}
+        onUpdated={onUpdated}
+        disabled={disabled || saving}
+      />
     </div>
   );
 }

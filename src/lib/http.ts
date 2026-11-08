@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { AppError } from "./errors";
+import { GeminiApiError } from "./providers/gemini-api";
 import { assertSameOrigin, OriginRejection } from "./origin";
 export const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -51,6 +52,15 @@ export async function handle(
           error: error.message,
           code: error.code,
           originCheck: error.originCheck,
+        },
+        error.status,
+      );
+    if (error instanceof GeminiApiError)
+      return json(
+        {
+          error: error.message,
+          code: "GEMINI_API_ERROR",
+          diagnostic: error.diagnostic,
         },
         error.status,
       );
