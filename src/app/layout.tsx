@@ -10,7 +10,9 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      {/* Grammarly and similar extensions can add body attributes before hydration.
+          Limit this escape hatch to body; descendant mismatches still surface. */}
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

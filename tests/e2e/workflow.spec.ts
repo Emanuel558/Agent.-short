@@ -163,3 +163,94 @@ test("mobile navigation and planned features stay clear and fit the screen", asy
     ),
   ).toBe(true);
 });
+
+test("browser-extension body attributes do not break hydration or project creation", async ({
+  page,
+}) => {
+  const hydrationErrors: string[] = [];
+  page.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      /hydrat|server rendered|did not match/i.test(message.text())
+    )
+      hydrationErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => hydrationErrors.push(error.message));
+  // Simulate Grammarly at document start, before React hydrates.
+  // Checking attributes afterwards proves we didn't disable/remove the extension.
+  await page.addInitScript(() => {
+    const patch = () => {
+      if (!document.body) return false;
+      document.body.setAttribute("data-new-gr-c-s-check-loaded", "14.1200.0");
+      document.body.setAttribute("data-gr-ext-installed", "");
+      return true;
+    };
+    const observer = new MutationObserver(() => {
+      if (patch()) observer.disconnect();
+    });
+    if (!patch())
+      observer.observe(document, { childList: true, subtree: true });
+  });
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Template demo", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-gr-ext-installed",
+    "",
+  );
+  await page
+    .getByRole("button", { name: "Create a video", exact: true })
+    .click();
+  await page
+    .getByLabel("Project name", { exact: true })
+    .fill("Extension compatibility test");
+  await page
+    .getByLabel("What’s your video about?")
+    .fill("Original creative habits");
+  await page
+    .getByRole("button", { name: "Create project", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Extension compatibility test",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(hydrationErrors).toEqual([]);
+});
+
+test("hydration mismatches inside the application are still reported", async ({
+  page,
+}) => {
+  const diagnostics: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") diagnostics.push(message.text());
+  });
+  page.on("pageerror", (error) => diagnostics.push(error.message));
+  await page.addInitScript(() => {
+    const patch = () => {
+      const heading = document.querySelector("h1");
+      if (!heading || heading.textContent !== "Let’s make something great.")
+        return false;
+      heading.textContent = "Deliberate descendant mismatch";
+      return true;
+    };
+    const observer = new MutationObserver(() => {
+      if (patch()) observer.disconnect();
+    });
+    if (!patch())
+      observer.observe(document, { childList: true, subtree: true });
+  });
+  await page.goto("/");
+  await expect
+    .poll(() =>
+      diagnostics.some((text) =>
+        /hydrat|server rendered|did not match/i.test(text),
+      ),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("heading", { name: "Let’s make something great." }),
+  ).toBeVisible();
+});

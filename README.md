@@ -102,3 +102,25 @@ REST endpoints: `GET/POST /api/projects`, `GET/PUT /api/projects/:id`, `POST /ap
 Saving and generation require the current project `version`. Conflicts return HTTP 409 and do not overwrite another tab’s work. Projects move through `draft`, `generating`, `script_ready`, and `failed`. Generation is a synchronous request with a 60-second provider timeout. Interrupted `generating` projects recover to `failed` when read after two minutes, allowing retry. No background task queue is implemented.
 
 See [the six-phase development plan](docs/DEVELOPMENT_PLAN.md) and [Phase 1 acceptance guide](docs/ACCEPTANCE.md). **Do not begin Phase 2 until Phase 1 is approved.**
+
+## Codespaces origin checks and browser extensions
+
+The API compares the complete browser origin (scheme, hostname, and port). In a Codespace, its one allowed public origin is derived from `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` for forwarded port **3000**. Proxy-rewritten localhost hosts and missing or comma-separated forwarding headers do not change that trusted origin. Other Codespaces and arbitrary `X-Forwarded-Host` values do not grant access. Next.js development/HMR access uses the same configured hostname; no wildcard is allowed. JSON content-type/body limits and cross-site request protections remain enabled.
+
+For a different forwarded port or a custom proxy, set **one exact browser origin** as server-only `APP_ORIGIN` in `.env.local`, then restart. For example: `APP_ORIGIN=https://your-codespace-name-4000.app.github.dev`. Do not add `*.app.github.dev`, a list of origins, or a URL path. Standard port-3000 Codespaces users need no new setting.
+
+Grammarly can add `data-new-gr-c-s-check-loaded` and `data-gr-ext-installed` to `<body>` before React hydrates. The layout tolerates attribute differences at that element using `suppressHydrationWarning`; it does not disable server rendering or suppress hydration diagnostics throughout the app. The extension is not removed or disabled. If a warning names application elements or content rather than extension-added body attributes, investigate it as a separate mismatch.
+
+### Update, restart, and retest these fixes
+
+1. In your **existing Codespace's terminal**, update the Phase 1 branch:
+
+   ```sh
+   git switch feat/autotube-phase-1
+   git pull --ff-only origin feat/autotube-phase-1
+   ```
+
+2. Restart Next.js so it reloads the origin configuration. If you started it in a terminal, press **Ctrl+C**, then run `npm run dev`. If it started automatically, use **Codespaces: Stop Current Codespace** from the command palette, then reopen the **same** Codespace from GitHub. Its startup hook starts the updated server. Do not delete the Codespace or its `data/` directory.
+3. Open **Ports → 3000 → Open in Browser**, keeping visibility **Private**. Refresh the page fully (Ctrl+Shift+R). Do not use another Codespace's URL or an old forwarded port.
+4. With Grammarly enabled if available, open **Create Video**, create a test project, generate a demo script, edit, save, reload, and export. You should see no cross-site error and no hydration warning about the two extension attributes on `body`.
+5. To repeat automated checks in the Codespace: `npm test`, `npm run typecheck`, `npm run build`, then `npm run test:e2e` (install the test browser using the earlier README instructions if needed). The browser suite uses its own loopback-only server and isolated database.

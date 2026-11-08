@@ -1,14 +1,12 @@
 import type { NextConfig } from "next";
+import { configuredAppOrigin } from "./src/lib/origin";
+const appOrigin = configuredAppOrigin();
 const config: NextConfig = {
   serverExternalPackages: ["better-sqlite3"],
   // Permit HMR through this Codespace's private forwarded origin, plus local tests.
   allowedDevOrigins: [
     "127.0.0.1",
-    ...(process.env.CODESPACE_NAME
-      ? [
-          `${process.env.CODESPACE_NAME}-3000.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || "app.github.dev"}`,
-        ]
-      : []),
+    ...(appOrigin ? [new URL(appOrigin).hostname] : []),
   ],
 };
 export default config;

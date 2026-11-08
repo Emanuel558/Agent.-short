@@ -1,16 +1,11 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { AppError } from "./errors";
+import { assertSameOrigin } from "./origin";
 export const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 export async function body(request: Request): Promise<unknown> {
-  const origin = request.headers.get("origin");
-  const host =
-    request.headers.get("x-forwarded-host") ||
-    request.headers.get("host") ||
-    new URL(request.url).host;
-  if (origin && new URL(origin).host !== host)
-    throw new AppError(403, "Cross-site requests are not allowed.");
+  assertSameOrigin(request);
   if (!request.headers.get("content-type")?.startsWith("application/json"))
     throw new AppError(415, "Send JSON data.");
   if (Number(request.headers.get("content-length")) > 250000)

@@ -23,6 +23,9 @@ export default defineConfig({
     timeout: 120000,
     env: {
       AI_PROVIDER: "demo",
+      // Keep this loopback test server independent of the developer's deployment.
+      APP_ORIGIN: "",
+      CODESPACE_NAME: "",
       DATABASE_PATH: `./data/e2e-${process.pid}.sqlite`,
       NEXT_TELEMETRY_DISABLED: "1",
     },
