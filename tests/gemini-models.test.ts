@@ -9,6 +9,10 @@ import { handle } from "../src/lib/http";
 import { ProjectRepository } from "../src/lib/db";
 import { generateProject } from "../src/lib/services/projects";
 import { DemoProvider } from "../src/lib/providers/demo";
+import { GeminiProvider } from "../src/lib/providers/gemini";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const brief = {
   title: "Model selection",
   topic: "Original creative storytelling",
@@ -268,3 +272,197 @@ it("blocks an unreviewed model before any inference request", async () => {
   ).rejects.toMatchObject({ status: 503 });
   expect(mock).not.toHaveBeenCalled();
 });
+
+it("traces a persisted SQLite selection to the exact generation URL when listing succeeds but generation returns 404", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "autotube-gemini-404-"));
+  const path = join(dir, "projects.sqlite");
+  let repo = new ProjectRepository(path);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const p = repo.create(brief);
+    const old = await generateProject(repo, p.id, p.version, new DemoProvider());
+    repo.setSetting("text-provider", "gemini");
+    repo.setSetting("gemini-model", "gemini-2.5-flash-lite");
+    repo.close();
+    repo = new ProjectRepository(path);
+    expect(repo.getSetting("gemini-model")).toBe("gemini-2.5-flash-lite");
+
+    const mock = vi.fn().mockImplementation(async (_url, init) => {
+      if (init.method === "POST") {
+        // A configuration change during a request must not change diagnostics,
+        // the model selected for this attempt or the key used for its recheck.
+        vi.stubEnv("GEMINI_API_KEY", "changed-after-request-key");
+        repo.setSetting("gemini-model", "gemini-2.5-flash");
+        return Response.json(
+          {
+            error: {
+              status: "NOT_FOUND",
+              message: "test-private-model-key private prompt",
+            },
+          },
+          { status: 404 },
+        );
+      }
+      return Response.json({
+        models: [
+          {
+            name: "models/gemini-2.5-flash-lite",
+            supportedGenerationMethods: ["generateContent"],
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", mock);
+    const response = await handle(() =>
+      generateProject(repo, p.id, old.version).then(() => Response.json({})),
+    );
+    expect(response.status).toBe(502);
+    const data = await response.json();
+    expect(data.diagnostic).toEqual({
+      operation: "generateContent",
+      upstreamHttpStatus: 404,
+      apiStatus: "NOT_FOUND",
+      apiReason: null,
+      reason: "MODEL_NOT_FOUND",
+      invalidFields: [],
+      apiVersion: "v1beta",
+      requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+      request: {
+        savedModelId: "gemini-2.5-flash-lite",
+        selectedModelId: "gemini-2.5-flash-lite",
+        modelSource: "saved selection",
+        apiVersion: "v1beta",
+        requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+      },
+      modelDiscovery: { supportsGenerateContent: true, upstreamHttpStatus: 200 },
+    });
+    expect(mock.mock.calls.map(([url]) => url)).toEqual([
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+    ]);
+    expect(
+      mock.mock.calls.filter(([, init]) => init.method === "POST"),
+    ).toHaveLength(1);
+    for (const [, init] of mock.mock.calls) {
+      expect(init.headers["x-goog-api-key"]).toBe("test-private-model-key");
+      expect(init.redirect).toBe("error");
+    }
+    expect(repo.get(p.id).scenes).toEqual(old.scenes);
+    expect(repo.history(p.id).some((r) => r.project.provider === "demo")).toBe(
+      true,
+    );
+    const exposed = JSON.stringify([
+      data,
+      log.mock.calls,
+      warn.mock.calls,
+      errorLog.mock.calls,
+    ]);
+    for (const secret of [
+      "test-private-model-key",
+      "changed-after-request-key",
+      "private prompt",
+    ])
+      expect(exposed).not.toContain(secret);
+  } finally {
+    repo.close();
+    rmSync(dir, { recursive: true, force: true });
+    log.mockRestore();
+    warn.mockRestore();
+    errorLog.mockRestore();
+  }
+});
+
+it.each([
+  { models: [], expected: false },
+  {
+    models: [{ name: "models/gemini-2.5-flash-lite", supportedGenerationMethods: ["embedContent"] }],
+    expected: false,
+  },
+  {
+    models: [{ name: "models/gemini-2.5-flash-lite", supportedGenerationMethods: ["generateContent"] }],
+    expected: true,
+  },
+])(
+  "checks the actual selected ID and method after a 404: $expected",
+  async ({ models, expected }) => {
+    const mock = vi.fn()
+      .mockResolvedValueOnce(
+        Response.json({ error: { status: "NOT_FOUND" } }, { status: 404 }),
+      )
+      .mockResolvedValueOnce(Response.json({ models }));
+    vi.stubGlobal("fetch", mock);
+    await expect(
+      new GeminiProvider("models/gemini-2.5-flash-lite").generate(brief),
+    ).rejects.toMatchObject({
+      status: 502,
+      diagnostic: {
+        request: {
+          savedModelId: "models/gemini-2.5-flash-lite",
+          selectedModelId: "gemini-2.5-flash-lite",
+          requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+        },
+        modelDiscovery: { supportsGenerateContent: expected, upstreamHttpStatus: 200 },
+      },
+    });
+    expect(mock.mock.calls[0][0]).not.toContain("models/models/");
+    expect(mock).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each([403, "network"])(
+  "preserves the original generation 404 when its metadata check fails: %s",
+  async (failure) => {
+    const mock = vi.fn().mockResolvedValueOnce(
+      Response.json({ error: { status: "NOT_FOUND" } }, { status: 404 }),
+    );
+    if (failure === "network")
+      mock.mockRejectedValueOnce(new Error("test-private-model-key"));
+    else
+      mock.mockResolvedValueOnce(Response.json(
+        { error: { status: "PERMISSION_DENIED", message: "test-private-model-key" } },
+        { status: failure as number },
+      ));
+    vi.stubGlobal("fetch", mock);
+    await expect(
+      new GeminiProvider("gemini-2.5-flash-lite").generate(brief),
+    ).rejects.toMatchObject({
+      status: 502,
+      diagnostic: {
+        upstreamHttpStatus: 404,
+        reason: "MODEL_NOT_FOUND",
+        modelDiscovery: {
+          supportsGenerateContent: null,
+          upstreamHttpStatus: failure === "network" ? null : 403,
+        },
+      },
+    });
+    expect(mock).toHaveBeenCalledTimes(2);
+  },
+);
+
+it.each([
+  { env: "gemini-2.5-flash-lite", source: "GEMINI_MODEL", id: "gemini-2.5-flash-lite" },
+  { env: "", source: "default", id: "gemini-2.5-flash" },
+])(
+  "reports the effective model source without a SQLite override: $source",
+  async ({ env, source, id }) => {
+    vi.stubEnv("GEMINI_MODEL", env);
+    const mock = vi.fn().mockResolvedValue(
+      Response.json({ error: { status: "INVALID_ARGUMENT" } }, { status: 400 }),
+    );
+    vi.stubGlobal("fetch", mock);
+    await expect(new GeminiProvider().generate(brief)).rejects.toMatchObject({
+      diagnostic: {
+        request: {
+          savedModelId: null,
+          selectedModelId: id,
+          modelSource: source,
+          apiVersion: "v1beta",
+        },
+      },
+    });
+    expect(mock).toHaveBeenCalledTimes(1);
+  },
+);

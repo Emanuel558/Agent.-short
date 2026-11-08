@@ -2,9 +2,11 @@ import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ request }) => {
   await request.put("/api/provider", { data: { provider: "demo" } });
+  await request.put("/api/gemini/models", { data: { model: null } });
 });
 test.afterEach(async ({ request }) => {
   await request.put("/api/provider", { data: { provider: "demo" } });
+  await request.put("/api/gemini/models", { data: { model: null } });
 });
 
 for (const format of ["short", "long"] as const) {
@@ -153,6 +155,16 @@ test("discover and explicitly save a free-tier candidate, then generate without 
   await expect(page.getByTestId("gemini-key-status")).toContainText(
     "gemini-2.5-flash-lite",
   );
+  const discovery = await (
+    await request.post("/api/gemini/models", { data: {} })
+  ).json();
+  expect(discovery.apiVersion).toBe("v1beta");
+  expect(discovery.generationRequest).toMatchObject({
+    savedModelId: "gemini-2.5-flash-lite",
+    selectedModelId: "gemini-2.5-flash-lite",
+    modelSource: "saved selection",
+    requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+  });
   await page.getByLabel("Script provider").selectOption("gemini");
   await page
     .getByRole("button", { name: "Save provider", exact: true })
@@ -182,5 +194,72 @@ test("discover and explicitly save a free-tier candidate, then generate without 
     .click();
   await expect(page.getByTestId("gemini-key-status")).toContainText(
     "gemini-2.5-flash.",
+  );
+});
+
+test("a listed model returning 404 reports the saved selection and actual request without losing scripts", async ({
+  page,
+  request,
+}) => {
+  const project = await (
+    await request.post("/api/projects", {
+      data: {
+        title: "404 request comparison",
+        topic: "simulate Gemini model not found",
+        language: "en",
+        format: "short",
+        duration: 60,
+      },
+    })
+  ).json();
+  const prior = await (
+    await request.post(`/api/projects/${project.id}/generate`, {
+      data: { version: project.version },
+    })
+  ).json();
+  const selection = await request.put("/api/gemini/models", {
+    data: { model: "gemini-2.5-flash-lite" },
+  });
+  expect(selection.ok()).toBe(true);
+  await request.put("/api/provider", { data: { provider: "gemini" } });
+  await page.goto(`/?view=studio&project=${project.id}`);
+  page.on("dialog", (dialog) => dialog.accept());
+  const responsePromise = page.waitForResponse(
+    (r) =>
+      r.url().endsWith(`/api/projects/${project.id}/generate`) &&
+      r.request().method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Generate with Gemini", exact: true })
+    .click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(502);
+  const data = await response.json();
+  expect(data.diagnostic).toMatchObject({
+    operation: "generateContent",
+    upstreamHttpStatus: 404,
+    apiStatus: "NOT_FOUND",
+    apiVersion: "v1beta",
+    requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+    request: {
+      savedModelId: "gemini-2.5-flash-lite",
+      selectedModelId: "gemini-2.5-flash-lite",
+      modelSource: "saved selection",
+    },
+    modelDiscovery: { supportsGenerateContent: true, upstreamHttpStatus: 200 },
+  });
+  expect(JSON.stringify(data)).not.toContain("autotube-e2e-gemini-key");
+  expect(JSON.stringify(data)).not.toContain("Private error");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Gemini HTTP 404" }),
+  ).toBeVisible();
+  await page.reload();
+  const saved = await (
+    await request.get(`/api/projects/${project.id}`)
+  ).json();
+  expect(saved.scenes).toEqual(prior.scenes);
+  expect(saved.status).toBe("failed");
+  await expect(page.getByTestId("gemini-key-status")).toContainText(
+    "gemini-2.5-flash-lite",
   );
 });

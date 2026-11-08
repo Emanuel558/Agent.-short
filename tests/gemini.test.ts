@@ -83,7 +83,8 @@ describe("Gemini official API", () => {
       await expect(new GeminiProvider().generate(brief)).rejects.toThrow(
         message as string,
       );
-      expect(mock).toHaveBeenCalledTimes(1);
+      // A 404 performs one metadata-only discovery check, never another POST.
+      expect(mock).toHaveBeenCalledTimes(status === 404 ? 2 : 1);
     },
   );
   it.each([

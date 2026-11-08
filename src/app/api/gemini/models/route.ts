@@ -7,6 +7,9 @@ import {
   configuredGeminiModel,
   listGeminiModels,
   requireFreeTierModel,
+  geminiRequestContext,
+  hasKnownFreeTier,
+  GEMINI_API_VERSION,
 } from "@/lib/providers/gemini-api";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,13 +26,20 @@ export const POST = (request: Request) =>
       .strict()
       .parse(await body(request));
     const models = await listGeminiModels();
+    const savedModel = repository().getSetting("gemini-model");
+    const currentModel = current();
     const recommendedModel =
       FREE_TIER_MODELS.find((id) => models.some((m) => m.id === id)) || null;
     return json({
       models,
       recommendedModel,
-      currentModel: current(),
-      currentModelListed: models.some((m) => m.id === current()),
+      currentModel,
+      currentModelListed: models.some((m) => m.id === currentModel),
+      apiVersion: GEMINI_API_VERSION,
+      generationRequest:
+        currentModel && hasKnownFreeTier(currentModel)
+          ? geminiRequestContext(savedModel)
+          : null,
       note: "Models listed by this key support generateContent. Listing does not establish generation access, free quota or billing status. No generation was requested.",
     });
   });

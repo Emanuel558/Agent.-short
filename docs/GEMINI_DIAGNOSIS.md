@@ -10,6 +10,43 @@ The assistant cannot access the user's live Codespace secret in its separate env
 
 Generation and model discovery now return `code: GEMINI_API_ERROR` with a `diagnostic` object containing the upstream HTTP status, operation, allowlisted Google status/reason, an application classification and known invalid request-field names. No raw Google message, arbitrary metadata, prompt, API key, cookie, or authorization header is exposed or logged.
 
+## Investigating the reported generation 404
+
+The latest live capture establishes **Google HTTP 404 / NOT_FOUND during generateContent**. AutoTube maps upstream failures to browser HTTP 502; that wrapper is not another Google status. The capture does not include the selected model or its request path, so it still cannot establish an ID/version mismatch or a removed model.
+
+The code trace uses these official endpoints, both with `GEMINI_API_KEY` in the `x-goog-api-key` header:
+
+| Operation | Method and path | Meaning |
+| --- | --- | --- |
+| Discovery | `GET /v1beta/models` | Lists metadata, filtered for `supportedGenerationMethods` containing `generateContent`. A successful list is not a generation-access guarantee. |
+| Generation | `POST /v1beta/models/{selectedModelId}:generateContent` | Sends the script prompt and structured-output configuration to the exact selected model. |
+
+Saving a model writes its normalized ID to the SQLite `settings` row with key `gemini-model`. `generateProject` reads that row once and passes it to `GeminiProvider`. It overrides `GEMINI_MODEL`; no project-level model, browser value, or alternate model is substituted. A legacy `models/` prefix is stripped exactly once when forming the request. Both endpoints share the same fixed official host and API-version constant.
+
+Generation errors now include `apiVersion`, `requestPath`, and a `request` snapshot:
+
+```json
+{
+  "savedModelId": "gemini-2.5-flash-lite",
+  "selectedModelId": "gemini-2.5-flash-lite",
+  "modelSource": "saved selection",
+  "apiVersion": "v1beta",
+  "requestPath": "/v1beta/models/gemini-2.5-flash-lite:generateContent"
+}
+```
+
+`savedModelId` is the stored SQLite value captured for that attempt (`null` if absent); `selectedModelId` is the normalized ID actually sent. If a stored value contains an optional prefix, the snapshot preserves it for comparison. Only reviewed free-tier IDs pass the guard before a generation request or its diagnostic can be produced. The same snapshot builds both the actual URL and diagnostic, even if Settings changes while generation is in flight.
+
+After a generation 404, the server performs one **metadata-only** discovery operation with the **same captured key and v1beta version**. It never retries generation or switches models. Its result appears as `modelDiscovery`:
+
+- `supportsGenerateContent: true`, HTTP 200: this exact ID is freshly listed with that method, despite its generation 404. This establishes a Google listing/generation discrepancy for the same request context; it does not prove generation permission or explain Google's internal availability.
+- `supportsGenerateContent: false`, HTTP 200: the selected ID is absent or does not advertise the method. Discovery working for other IDs does not validate this selection. Explicitly choose a listed, reviewed free-tier model if you want to change it.
+- `supportsGenerateContent: null`: discovery itself failed; `upstreamHttpStatus` gives its safe status when available. The original generation 404 is preserved.
+
+**One targeted live test:** after loading the updated server code, keep the current key/model/settings unchanged. Open browser DevTools → Network, click **Generate with Gemini once**, and inspect the Response for `POST /api/projects/<id>/generate`. Share only `code` and `diagnostic`. The response now contains the captured SQLite selection, actual request ID/version/path, and same-key discovery comparison. No separate terminal command or raw headers/HAR is needed. The discovery recheck runs on the server and will not appear as a separate browser request. It has a 15-second total timeout; it can add that much time after a failed generation.
+
+The live SQLite file, secret, and Google generation access are not accessible in the assistant's separate environment. Automated tests reproduce a successful model list plus a generation 404 at the HTTP boundary, with a selected model different from the environment default and a SQLite reopen. They confirm correct selection/path propagation, privacy, no inference retries, and preservation of existing scripts/history. They do not reproduce or resolve the live Google-side 404. Do not claim a model-path defect was found when none was reproduced.
+
 | Diagnostic                                                  | Meaning and action                                                                                                                            |
 | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | 404 / MODEL_NOT_FOUND                                       | Requested model or API resource was not found. Check the official models list for generateContent support.                                    |

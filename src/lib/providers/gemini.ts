@@ -2,9 +2,10 @@ import type { Brief } from "../schema";
 import type { TextProvider } from "./text";
 import { AppError } from "../errors";
 import {
-  configuredGeminiModel,
-  requireFreeTierModel,
   geminiKey,
+  geminiRequestContext,
+  listGeminiModels,
+  GeminiApiError,
   apiError,
   GEMINI_API,
 } from "./gemini-api";
@@ -14,11 +15,13 @@ export class GeminiProvider implements TextProvider {
   constructor(private readonly modelOverride?: string) {}
   async generate(brief: Brief) {
     const key = geminiKey();
-    const model = configuredGeminiModel(this.modelOverride);
-    requireFreeTierModel(model);
+    // Snapshot the selected ID and source before awaiting any external request.
+    // Build diagnostics and the actual URL from that same snapshot.
+    const request = geminiRequestContext(this.modelOverride);
+    const model = request.selectedModelId;
     let response: Response;
     try {
-      response = await fetch(`${GEMINI_API}/models/${model}:generateContent`, {
+      response = await fetch(new URL(request.requestPath, GEMINI_API).href, {
         method: "POST",
         cache: "no-store",
         signal: AbortSignal.timeout(60000),
@@ -43,7 +46,29 @@ export class GeminiProvider implements TextProvider {
         "Gemini could not be reached or timed out. Check the connection and retry.",
       );
     }
-    if (!response.ok) throw await apiError(response, "generateContent");
+    if (!response.ok) {
+      const error = await apiError(response, "generateContent", request);
+      if (response.status === 404) {
+        // Metadata only, using this attempt's captured key and API version.
+        // Never retry inference, select a fallback, or replace the original 404.
+        try {
+          const models = await listGeminiModels(key);
+          error.diagnostic.modelDiscovery = {
+            supportsGenerateContent: models.some((m) => m.id === model),
+            upstreamHttpStatus: 200,
+          };
+        } catch (discoveryError) {
+          error.diagnostic.modelDiscovery = {
+            supportsGenerateContent: null,
+            upstreamHttpStatus:
+              discoveryError instanceof GeminiApiError
+                ? discoveryError.diagnostic.upstreamHttpStatus
+                : null,
+          };
+        }
+      }
+      throw error;
+    }
     let data;
     try {
       data = await response.json();

@@ -48,6 +48,16 @@ globalThis.fetch = async function (input, init) {
   if (payload.generationConfig?.responseMimeType !== "application/json")
     throw new Error("Expected structured Gemini output");
   const prompt = payload.contents[0].parts[0].text;
+  if (prompt.includes("simulate Gemini model not found"))
+    return Response.json(
+      {
+        error: {
+          status: "NOT_FOUND",
+          message: "Private error with autotube-e2e-gemini-key and prompt",
+        },
+      },
+      { status: 404 },
+    );
   if (prompt.includes("simulate Gemini quota"))
     return new Response("", { status: 429 });
   const duration = Number(prompt.match(/"duration":(\d+)/)?.[1]);

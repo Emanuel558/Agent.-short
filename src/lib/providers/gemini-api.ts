@@ -1,5 +1,6 @@
 import { AppError } from "../errors";
-export const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
+export const GEMINI_API_VERSION = "v1beta";
+export const GEMINI_API = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}`;
 // Reviewed against Google's Standard (not Batch) pricing on 2026-11-08.
 // Listing models does NOT establish billing status or remaining free quota.
 export const FREE_TIER_MODELS = [
@@ -36,6 +37,31 @@ export function geminiKey(): string {
     );
   return key;
 }
+export interface GeminiRequestContext {
+  savedModelId: string | null;
+  selectedModelId: string;
+  modelSource: "saved selection" | "GEMINI_MODEL" | "default";
+  apiVersion: typeof GEMINI_API_VERSION;
+  requestPath: string;
+}
+/** Resolve once; only reviewed IDs may appear in request diagnostics. */
+export function geminiRequestContext(savedModel?: string): GeminiRequestContext {
+  const model = configuredGeminiModel(savedModel);
+  requireFreeTierModel(model);
+  return {
+    // Preserve the stored value, including an optional models/ prefix, so it
+    // can be compared with the normalized ID actually used in the URL.
+    savedModelId: savedModel ?? null,
+    selectedModelId: model,
+    modelSource: savedModel
+      ? "saved selection"
+      : process.env.GEMINI_MODEL
+        ? "GEMINI_MODEL"
+        : "default",
+    apiVersion: GEMINI_API_VERSION,
+    requestPath: `/${GEMINI_API_VERSION}/models/${model}:generateContent`,
+  };
+}
 export interface GeminiDiagnostic {
   operation: string;
   upstreamHttpStatus: number;
@@ -43,6 +69,13 @@ export interface GeminiDiagnostic {
   apiReason: string | null;
   reason: string;
   invalidFields: string[];
+  apiVersion: typeof GEMINI_API_VERSION;
+  requestPath: string | null;
+  request?: GeminiRequestContext;
+  modelDiscovery?: {
+    supportsGenerateContent: boolean | null;
+    upstreamHttpStatus: number | null;
+  };
 }
 export class GeminiApiError extends AppError {
   constructor(
@@ -57,7 +90,8 @@ export class GeminiApiError extends AppError {
 }
 export async function apiError(
   response: Response,
-  operation: string,
+  operation: "models.list" | "generateContent",
+  request?: GeminiRequestContext,
 ): Promise<GeminiApiError> {
   let payload: any;
   try {
@@ -159,14 +193,20 @@ export async function apiError(
     apiReason,
     reason,
     invalidFields: fields,
+    apiVersion: GEMINI_API_VERSION,
+    requestPath:
+      request?.requestPath ||
+      (operation === "models.list" ? `/${GEMINI_API_VERSION}/models` : null),
+    ...(request ? { request } : {}),
   });
 }
 export interface AvailableGeminiModel {
   id: string;
   freeTierDocumented: boolean;
 }
-export async function listGeminiModels(): Promise<AvailableGeminiModel[]> {
-  const key = geminiKey();
+export async function listGeminiModels(
+  key: string = geminiKey(),
+): Promise<AvailableGeminiModel[]> {
   const signal = AbortSignal.timeout(15000);
   const seen = new Set<string>();
   const result = new Map<string, AvailableGeminiModel>();
