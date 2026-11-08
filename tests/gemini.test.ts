@@ -233,3 +233,38 @@ it("opens a pre-settings SQLite database without rewriting projects or revisions
     rmSync(dir, { recursive: true });
   }
 });
+
+it("only exposes a key-presence flag and model, never the key or its length", () => {
+  const info = providerInfo("gemini");
+  expect(info.keyConfigured).toBe(true);
+  expect(info.model).toBe("gemini-2.5-flash");
+  expect(JSON.stringify(info)).not.toContain("test-server-secret");
+  vi.stubEnv("GEMINI_API_KEY", "   ");
+  expect(providerInfo("gemini").keyConfigured).toBe(false);
+});
+
+it("does not log credentials when the upstream fails or echoes sensitive details", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(new Response("test-server-secret", { status: 429 })),
+    );
+    await expect(new GeminiProvider().generate(brief)).rejects.toThrow("quota");
+    expect(
+      JSON.stringify([
+        ...log.mock.calls,
+        ...error.mock.calls,
+        ...warn.mock.calls,
+      ]),
+    ).not.toContain("test-server-secret");
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+    warn.mockRestore();
+  }
+});

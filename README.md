@@ -35,7 +35,7 @@ Project format, language, topic, and target duration are fixed after creation in
 
 ## Gemini cloud AI, optional Ollama, and Demo
 
-**Settings → Script provider → Save provider** chooses Gemini, Ollama, or Demo. This choice persists in SQLite and takes precedence over `AI_PROVIDER`. Changing selection does not rewrite projects or history. Each script retains the provider that generated it. Selecting a provider does not send a request; **Generate AI script** does. Demo remains the initial no-key default unless `AI_PROVIDER` is configured.
+**Script Studio (beside Generate Script) or Settings → Script provider → Save provider** chooses Gemini, Ollama, or Demo. This choice persists in SQLite and takes precedence over `AI_PROVIDER`. Changing selection does not rewrite projects or history. Each script retains the provider that generated it. Selecting a provider does not send a request; **Generate with Gemini** does when Gemini is selected. Demo remains the initial no-key default unless `AI_PROVIDER` is configured.
 
 ### Gemini setup (all inside Codespaces)
 
@@ -49,13 +49,34 @@ Project format, language, topic, and target duration are fixed after creation in
    # GEMINI_API_KEY is supplied as a Codespaces secret or in .env.local
    ```
 
-4. Restart Next.js after adding secrets, then select **Google Gemini** in Settings and save. Create/reopen a project and generate a draft. Edit, fact-check, save, reopen, and export as before.
+4. If you have already saved the secret, ensure it is allowed for `Emanuel558/Agent.-short`, then stop and reopen the **same Codespace** to load it into the server environment. Reopen your project or Settings. The provider controls must show **Gemini API key: loaded on server** and model **gemini-2.5-flash**. This indicates key presence, not that Google has accepted the key.
+5. Beside the project's generation button, select **Google Gemini → Save provider**. The active-provider label changes to **Google Gemini** and the button to **Generate with Gemini**. Click it to make the actual request. Narration text appears in Script, and visual direction/timing in Scene plan. No voice audio is produced in Phase 1.
+6. Look for **Gemini-generated draft · review required**, then edit, fact-check, save, reload, and export. Repeat with one Short and one long-form project. If quota, key access, or model availability fails, the app reports that error and preserves your saved script; it never presents Demo as a Gemini result.
 
 The adapter calls the **official Gemini REST `generateContent` API** with structured JSON output. Keys are sent only in a server-side `x-goog-api-key` header to Google's fixed HTTPS endpoint. It uses a 60-second timeout, validates scene structure, nonempty narration/visuals and exact duration totals, and saves only validated output. Quota errors, unavailable models, access failures, blocked content and truncated responses are shown clearly. Failed generation preserves the existing script and history. No automatic retries, model upgrades, cloud fallback, or billing setup are performed.
 
 **Availability limitation:** Google's current [model pricing documentation](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash) marks `gemini-2.5-flash` deprecated and announces provider-side rerouting from December 1, 2026. We retain your requested ID as the default. The app cannot control Google's aliases or detect whether your Google project already has billing. Check the current model availability and pricing for your account before use; a billed project can incur charges. You can explicitly set `GEMINI_MODEL` to another supported model or select Demo. The app never changes model IDs automatically.
 
 The [Gemini API reference](https://ai.google.dev/api/generate-content) and [structured output guide](https://ai.google.dev/gemini-api/docs/structured-output) describe the official protocol. Live Gemini access has not been verified with your key; tests mock Google's HTTP responses. No key is bundled.
+
+### If Gemini appears missing in your Codespace
+
+The integration lives on the existing **Phase 1 branch**, not on `main` until PR #1 is merged. Update the running checkout in the Codespaces terminal:
+
+```sh
+git switch feat/autotube-phase-1
+git pull --ff-only origin feat/autotube-phase-1
+```
+
+Stop and reopen the same Codespace, open private port 3000, and hard-refresh. The editor and Settings must now show the provider selector and Gemini key status. If those controls are absent, check `pwd` and `git log -1 --oneline`: the open URL may belong to another Codespace or checkout. Never delete `data/` to update the app.
+
+If the key status says **not loaded on server**, check the secret's repository access and restart the Codespace. A safe terminal check for a Codespaces secret is:
+
+```sh
+node -e 'console.log(process.env.GEMINI_API_KEY?.trim() ? "Gemini secret is available" : "Gemini secret is not available")'
+```
+
+This prints only presence. Never run `echo` on the secret or paste it into browser code, logs, or chat. Keys from `.env.local` are loaded by Next.js rather than this standalone Node check.
 
 ### Ollama (optional local inference)
 
@@ -100,7 +121,7 @@ npx playwright install --with-deps chromium
 npm run test:e2e
 ```
 
-These install browser-test dependencies **inside Codespaces**, never on your computer. E2E tests start their own development server on port 3001 with an isolated, ignored database and a demo provider. Close any other process using that port first. On a Linux environment with Chromium already installed, you may use `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e`.
+These install browser-test dependencies **inside Codespaces**, never on your computer. E2E tests start their own development server on port 3001 with an isolated, ignored database. They override any inherited key with an obvious test-only dummy key and preload `tests/helpers/gemini-fetch.mjs` to intercept Google requests. The real browser → API route → provider → SQLite path is exercised for Shorts, long-form, and quota recovery without calling Google. This fixture is never loaded by normal `npm run dev` or `npm start`, and cannot establish that your live account/key works. Close any other process using that port first. On a Linux environment with Chromium already installed, you may use `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e`.
 
 GitHub Actions runs Vitest, TypeScript checks, a production build, and Chromium workflow tests on Node 22. The lockfile pins installed dependencies. For production-mode testing in your private Codespace, use `npm run build` then `npm start`.
 

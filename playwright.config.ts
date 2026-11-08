@@ -1,4 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+const mockGemini = pathToFileURL(
+  fileURLToPath(new URL("./tests/helpers/gemini-fetch.mjs", import.meta.url)),
+).href;
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -23,6 +27,10 @@ export default defineConfig({
     timeout: 120000,
     env: {
       AI_PROVIDER: "demo",
+      // Override any real credentials inherited from a developer's Codespace.
+      GEMINI_API_KEY: "autotube-e2e-gemini-key",
+      GEMINI_MODEL: "gemini-2.5-flash",
+      NODE_OPTIONS: `--import=${mockGemini}`,
       // Keep this loopback test server independent of the developer's deployment.
       APP_ORIGIN: "",
       CODESPACE_NAME: "",

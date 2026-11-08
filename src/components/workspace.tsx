@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ProviderPicker } from "./provider-picker";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowDownToLine,
@@ -282,7 +283,7 @@ export function Workspace() {
               id={projectId}
               provider={provider}
               onBack={() => go("projects")}
-              onChange={() => void refresh()}
+              onChange={refresh}
               onDirty={(value) => {
                 dirty.current = value;
               }}
@@ -978,7 +979,7 @@ function ProjectEditor({
   id: string;
   provider: ProviderInfo | null;
   onBack: () => void;
-  onChange: () => void;
+  onChange: () => void | Promise<void>;
   onDirty: (dirty: boolean) => void;
 }) {
   const [project, setProject] = useState<Project | null>(null);
@@ -1309,7 +1310,12 @@ function ProjectEditor({
                   <div className="demo-banner">
                     <Sparkles size={17} />
                     <div>
-                      <strong>AI-generated draft · review required</strong>
+                      <strong>
+                        {project.provider === "gemini"
+                          ? "Gemini-generated draft"
+                          : "AI-generated draft"}{" "}
+                        · review required
+                      </strong>
                       <p>
                         Fact-check claims and review originality before using
                         this script.
@@ -1342,7 +1348,9 @@ function ProjectEditor({
                         ? "Generating script…"
                         : provider?.id === "demo"
                           ? "Generate demo script"
-                          : "Generate AI script"}
+                          : provider?.id === "gemini"
+                            ? "Generate with Gemini"
+                            : "Generate AI script"}
                     </button>
                     {dirty && (
                       <small>Edits will be saved before generation.</small>
@@ -1495,6 +1503,12 @@ function ProjectEditor({
                 ? "Try a fresh direction"
                 : "Find your first words"}
             </h3>
+            <ProviderPicker
+              provider={provider}
+              onUpdated={onChange}
+              disabled={locked}
+            />
+            <p>Active provider: {provider?.label || "Loading…"}</p>
             <p>{provider?.detail || "Checking text provider…"}</p>
             <button
               className="subtle-button full-width"
@@ -1510,7 +1524,9 @@ function ProjectEditor({
                 ? "Generating…"
                 : provider?.id === "demo"
                   ? "Generate demo script"
-                  : "Generate AI script"}
+                  : provider?.id === "gemini"
+                    ? "Generate with Gemini"
+                    : "Generate AI script"}
             </button>
             {dirty && (
               <small className="muted">
@@ -1557,23 +1573,6 @@ function Settings({
   provider: ProviderInfo | null;
   onUpdated: () => Promise<void>;
 }) {
-  const [choice, setChoice] = useState<string | null>(null);
-  const selectedChoice = choice ?? provider?.id ?? "demo";
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
-  async function selectProvider() {
-    setSaving(true);
-    setMessage("");
-    try {
-      await api("/api/provider", "PUT", { provider: selectedChoice });
-      await onUpdated();
-      setMessage("Provider saved. Future generation uses this selection.");
-    } catch (e) {
-      setMessage((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
   return (
     <>
       <Heading
@@ -1594,31 +1593,7 @@ function Settings({
             </span>
           </div>
           <p>{provider?.detail}</p>
-          <label>
-            Script provider
-            <select
-              aria-label="Script provider"
-              value={selectedChoice}
-              onChange={(e) => setChoice(e.target.value)}
-              disabled={saving || !provider}
-            >
-              <option value="gemini">Google Gemini · cloud</option>
-              <option value="ollama">Ollama · optional local inference</option>
-              <option value="demo">Demo · offline templates</option>
-              <option value="openai-compatible">
-                OpenAI-compatible · legacy configuration
-              </option>
-            </select>
-          </label>
-          <button
-            className="primary"
-            style={{ marginTop: 16 }}
-            disabled={saving || !provider || selectedChoice === "invalid"}
-            onClick={() => void selectProvider()}
-          >
-            {saving ? <Spinner /> : <Check size={16} />}Save provider
-          </button>
-          {message && <p role="status">{message}</p>}
+          <ProviderPicker provider={provider} onUpdated={onUpdated} />
           <h3>Gemini setup in Codespaces</h3>
           <p>
             Create a key in{" "}

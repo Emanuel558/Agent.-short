@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
 
+test.beforeEach(async ({ request }) => {
+  await request.put("/api/provider", { data: { provider: "demo" } });
+});
+
 test("create, generate, edit, save, reload, history and both exports", async ({
   page,
   request,

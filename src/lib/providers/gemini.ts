@@ -5,7 +5,7 @@ import { parseGenerated, responseJsonSchema, scriptPrompt } from "./output";
 export class GeminiProvider implements TextProvider {
   readonly id = "gemini" as const;
   async generate(brief: Brief) {
-    const key = process.env.GEMINI_API_KEY;
+    const key = process.env.GEMINI_API_KEY?.trim();
     if (!key)
       throw new AppError(
         503,
@@ -20,6 +20,7 @@ export class GeminiProvider implements TextProvider {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           method: "POST",
+          cache: "no-store",
           signal: AbortSignal.timeout(60000),
           redirect: "error",
           headers: {

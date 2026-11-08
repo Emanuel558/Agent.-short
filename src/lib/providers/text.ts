@@ -8,6 +8,9 @@ export interface ProviderInfo {
   label: string;
   configured: boolean;
   detail: string;
+  model?: string;
+  keyConfigured?: boolean;
+  options?: ProviderInfo[];
 }
 export function providerInfo(
   id: string = process.env.AI_PROVIDER || "demo",
@@ -16,8 +19,10 @@ export function providerInfo(
     return {
       id,
       label: "Google Gemini",
-      configured: !!process.env.GEMINI_API_KEY,
-      detail: process.env.GEMINI_API_KEY
+      configured: !!process.env.GEMINI_API_KEY?.trim(),
+      keyConfigured: !!process.env.GEMINI_API_KEY?.trim(),
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      detail: process.env.GEMINI_API_KEY?.trim()
         ? "Cloud AI · gemini-2.5-flash by default (server-configurable). Free-tier limits and model availability depend on Google. Review facts before use."
         : "Add GEMINI_API_KEY as a server-side Codespaces secret or in .env.local, then restart. No billing is enabled by the app.",
     };
