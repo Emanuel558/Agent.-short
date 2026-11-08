@@ -63,7 +63,12 @@ export async function generateProject(
     "Generation started",
   );
   try {
-    const scenes = await provider.generate(current);
+    // TypeScript's Brief type does not strip Project fields at runtime. Send
+    // only the requested brief, never previous scripts/errors or storage data.
+    const { title, topic, format, language, duration } = current;
+    const scenes = await provider.generate({
+      title, topic, format, language, duration,
+    });
     validateGenerated(scenes, current);
     return repo.update(
       id,

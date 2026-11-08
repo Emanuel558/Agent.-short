@@ -402,6 +402,14 @@ it("traces a persisted SQLite selection to the exact generation URL when listing
       reason: "MODEL_NOT_FOUND",
       invalidFields: [],
       apiVersion: "v1beta",
+      payload: {
+        requestBytes: expect.any(Number),
+        promptBytes: expect.any(Number),
+        schemaBytes: expect.any(Number),
+        maxOutputTokens: 16384,
+        responseMimeType: "application/json",
+        temperature: 0.7,
+      },
       requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
       request: {
         savedModelId: "gemini-2.5-flash-lite",

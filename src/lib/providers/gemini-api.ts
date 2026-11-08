@@ -74,6 +74,14 @@ export interface GeminiDiagnostic {
   apiVersion: typeof GEMINI_API_VERSION;
   requestPath: string | null;
   request?: GeminiRequestContext;
+  payload?: {
+    requestBytes: number;
+    promptBytes: number;
+    schemaBytes: number;
+    maxOutputTokens: number;
+    responseMimeType: string;
+    temperature: number;
+  };
   modelDiscovery?: {
     supportsGenerateContent: boolean | null;
     upstreamHttpStatus: number | null;

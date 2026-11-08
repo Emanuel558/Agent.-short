@@ -19,6 +19,17 @@ export class GeminiProvider implements TextProvider {
     // Build diagnostics and the actual URL from that same snapshot.
     const request = geminiRequestContext(this.modelOverride);
     const model = request.selectedModelId;
+    const prompt = scriptPrompt(brief);
+    const generationConfig = {
+      responseMimeType: "application/json",
+      responseJsonSchema,
+      maxOutputTokens: 16384,
+      temperature: 0.7,
+    };
+    const requestBody = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig,
+    });
     let response: Response;
     try {
       response = await fetch(new URL(request.requestPath, GEMINI_API).href, {
@@ -30,15 +41,7 @@ export class GeminiProvider implements TextProvider {
           "Content-Type": "application/json",
           "x-goog-api-key": key,
         },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: scriptPrompt(brief) }] }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseJsonSchema,
-            maxOutputTokens: 16384,
-            temperature: 0.7,
-          },
-        }),
+        body: requestBody,
       });
     } catch {
       throw new AppError(
@@ -48,6 +51,16 @@ export class GeminiProvider implements TextProvider {
     }
     if (!response.ok) {
       const error = await apiError(response, "generateContent", request);
+      // Sizes and fixed configuration only: no prompt, schema content, key,
+      // response text, project identity or user data in browser diagnostics.
+      error.diagnostic.payload = {
+        requestBytes: Buffer.byteLength(requestBody),
+        promptBytes: Buffer.byteLength(prompt),
+        schemaBytes: Buffer.byteLength(JSON.stringify(responseJsonSchema)),
+        maxOutputTokens: generationConfig.maxOutputTokens,
+        responseMimeType: generationConfig.responseMimeType,
+        temperature: generationConfig.temperature,
+      };
       if (response.status === 404) {
         // Metadata only, using this attempt's captured key and API version.
         // Never retry inference, select a fallback, or replace the original 404.
