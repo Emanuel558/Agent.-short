@@ -1557,17 +1557,15 @@ function Settings({
   provider: ProviderInfo | null;
   onUpdated: () => Promise<void>;
 }) {
-  const [choice, setChoice] = useState<string>(provider?.id || "demo");
+  const [choice, setChoice] = useState<string | null>(null);
+  const selectedChoice = choice ?? provider?.id ?? "demo";
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
-  useEffect(() => {
-    if (provider) setChoice(provider.id);
-  }, [provider]);
   async function selectProvider() {
     setSaving(true);
     setMessage("");
     try {
-      await api("/api/provider", "PUT", { provider: choice });
+      await api("/api/provider", "PUT", { provider: selectedChoice });
       await onUpdated();
       setMessage("Provider saved. Future generation uses this selection.");
     } catch (e) {
@@ -1600,7 +1598,7 @@ function Settings({
             Script provider
             <select
               aria-label="Script provider"
-              value={choice}
+              value={selectedChoice}
               onChange={(e) => setChoice(e.target.value)}
               disabled={saving || !provider}
             >
@@ -1615,7 +1613,7 @@ function Settings({
           <button
             className="primary"
             style={{ marginTop: 16 }}
-            disabled={saving || !provider || choice === "invalid"}
+            disabled={saving || !provider || selectedChoice === "invalid"}
             onClick={() => void selectProvider()}
           >
             {saving ? <Spinner /> : <Check size={16} />}Save provider
