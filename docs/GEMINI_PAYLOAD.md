@@ -37,72 +37,28 @@ After loading the updated code in the Codespace, run the following **from the re
 This makes **at most six distinct generation requests**, not six retries. It stops on the first failed request. Each stage adds one difference: the actual app prompt, temperature, JSON mode, schema, then the original output cap. The first five stages cap output at 32 tokens and may truncate; HTTP 200 only means that configuration was accepted. The last stage uses the actual adapter configuration. All calls consume the existing project's quota; this does not establish account billing status.
 
 ```sh
-node --input-type=module <<'NODE'
-import nextEnv from '@next/env';
-import { createServer } from 'vite';
-nextEnv.loadEnvConfig(process.cwd(), true, { info() {}, error() {} });
-const report = (stage, httpStatus, classification) =>
-  console.log(JSON.stringify({ stage, httpStatus, classification }));
-
-(async () => {
-  if (!process.env.GEMINI_API_KEY?.trim())
-    return report('setup', null, 'KEY_NOT_LOADED');
-  const server = await createServer({
-    configFile: false, logLevel: 'silent', appType: 'custom',
-    server: { middlewareMode: true }
-  });
-  const originalFetch = globalThis.fetch;
-  let captured;
-  try {
-    const { GeminiProvider } = await server.ssrLoadModule('/src/lib/providers/gemini.ts');
-    globalThis.fetch = async (url, init) => {
-      captured = { url, init };
-      return Response.json({ error: { status: 'INVALID_ARGUMENT' } }, { status: 400 });
-    };
-    try {
-      await new GeminiProvider('gemini-3.1-flash-lite').generate({
-        title: 'Study desk ideas', topic: 'Three ways to organize a study desk',
-        format: 'short', language: 'en', duration: 60
-      });
-    } catch { /* Capture only; no live request has been sent yet. */ }
-  } finally {
-    globalThis.fetch = originalFetch;
-    await server.close();
-  }
-  if (!captured) return report('setup', null, 'REQUEST_CAPTURE_FAILED');
-  const app = JSON.parse(captured.init.body);
-  const config = app.generationConfig;
-  const variant = extra => ({
-    contents: app.contents,
-    generationConfig: { maxOutputTokens: 32, ...extra }
-  });
-  const stages = [
-    ['minimal-current', {
-      contents: [{ role: 'user', parts: [{ text: 'Reply with OK.' }] }],
-      generationConfig: { maxOutputTokens: 32 }
-    }],
-    ['app-prompt', variant({})],
-    ['temperature', variant({ temperature: config.temperature })],
-    ['json-mode', variant({ temperature: config.temperature, responseMimeType: config.responseMimeType })],
-    ['json-schema', variant({ ...config, maxOutputTokens: 32 })],
-    ['actual-app-settings', app]
-  ];
-  for (const [stage, payload] of stages) {
-    const response = await originalFetch(captured.url, {
-      ...captured.init, body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60000)
-    });
-    const classification = response.ok ? 'ACCEPTED' : ({
-      400: 'INVALID_REQUEST_OR_CREDENTIAL', 401: 'AUTHENTICATION_REJECTED',
-      403: 'ACCESS_REJECTED', 404: 'MODEL_OR_RESOURCE_NOT_FOUND',
-      429: 'QUOTA_OR_RATE_LIMIT', 503: 'SERVICE_UNAVAILABLE'
-    })[response.status] || 'OTHER_HTTP_FAILURE';
-    report(stage, response.status, classification);
-    await response.body?.cancel();
-    if (!response.ok) break;
-  }
-})().catch(() => report('diagnostic', null, 'SETUP_NETWORK_OR_TIMEOUT_FAILURE'));
-NODE
+node --experimental-strip-types scripts/gemini-diagnostic.ts
 ```
+
+The checked-in script replaces the old inline command, whose single catch-all category hid the failing operation. Pull the current Phase 1 branch before running it. It works on the project's supported Node versions using built-in TypeScript stripping; no package installation is performed. The app itself is not started or modified. Paths and environment-file loading are resolved from the script's repository location, rather than relying on the terminal's current directory for Vite setup.
+
+Each JSON line contains a fixed `stage`, `classification`, nullable `httpStatus`, and `requestsSent`. Google comparisons also include a fixed `variant` name. `STARTED` and `OK` show setup progress; error categories never contain the raw exception, message, stack, path, prompt, key, schema, or response body.
+
+| Stage | What it identifies | Example safe failure categories |
+| --- | --- | --- |
+| `environment` | Loading Next environment support and checking key presence | `MODULE_NOT_FOUND`, `KEY_NOT_LOADED`, `ENVIRONMENT_LOAD_FAILED` |
+| `vite-setup` | Importing Vite and creating the one-shot loader | `FILE_WATCH_LIMIT`, `FILE_DESCRIPTOR_LIMIT`, `PORT_IN_USE`, `VITE_SETUP_FAILED` |
+| `adapter-loading` | Loading the actual Gemini adapter module and checking its export | `FILE_NOT_FOUND`, `MODULE_NOT_FOUND`, `SYNTAX_ERROR`, `ADAPTER_LOAD_FAILED`, `ADAPTER_EXPORT_MISSING` |
+| `request-capture` | Running the adapter against a blocked-network synthetic capture | `CAPTURE_GENERATION_FAILED`, `CAPTURE_NO_REQUEST`, `CAPTURE_MULTIPLE_REQUESTS` |
+| `payload-validation` | Checking the captured endpoint, authentication header presence/match and payload shape | `CAPTURE_ENDPOINT_MISMATCH`, `CAPTURE_KEY_MISMATCH`, `CAPTURE_PAYLOAD_INVALID` |
+| `vite-cleanup` | Closing the loader and restoring the original fetch | `VITE_CLEANUP_FAILED` |
+| `google-api-request` | Sending one specific live comparison | `TIMEOUT`, `DNS_LOOKUP_FAILED`, `CONNECTION_REFUSED`, `TLS_CERTIFICATE_FAILED`, `GOOGLE_REQUEST_FAILED`, `SERVICE_UNAVAILABLE` |
+| `google-response` | Discarding an unread response body after status was reported | `RESPONSE_CLEANUP_FAILED` |
+
+For example, `{"stage":"adapter-loading","httpStatus":null,"classification":"MODULE_NOT_FOUND","requestsSent":0}` identifies a loader failure before any live Google requests. `{"stage":"google-api-request","httpStatus":null,"classification":"TIMEOUT","requestsSent":1,"variant":"minimal-current"}` identifies a timeout during the first comparison. A numeric HTTP status means a response was received; DNS/TLS/connection/timeout categories have no HTTP status.
+
+The loader disables unnecessary file watching, HMR sockets and dependency discovery for this one-shot capture. Network fetches during setup/loading are blocked, not forwarded; capture performs no live Google request. The original fetch is restored even when capture or cleanup fails. A cleanup failure is reported separately and prevents the live comparisons. If an earlier phase and cleanup both fail, both categories are retained. No setup failure is relabeled as a Google API failure.
+
+Tests inject failures into setup, adapter loading, capture, validation, cleanup and transport, verify that error messages containing dummy secrets never appear in output, and assert the six-call cap and stop-on-failure behavior. A subprocess test also executes this exact CLI with real Vite and the real adapter from outside the repository; only the Google transport is mocked. These tests cannot establish which phase failed in the user's live Codespace until the new output is captured.
 
 Share only the JSON lines. If `minimal-current` also returns 503, the live failure is not limited to the app's schema or large token cap. A failure first appearing at a later stage narrows the difference, but one pass cannot exclude a transient outage between requests. If every stage returns 200, the synthetic app payload works now; it does not prove every user topic/duration works. No live outcome is claimed from the mock tests.
