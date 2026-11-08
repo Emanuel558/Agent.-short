@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { AppError } from "./errors";
-import { assertSameOrigin } from "./origin";
+import { assertSameOrigin, OriginRejection } from "./origin";
 export const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 export async function body(request: Request): Promise<unknown> {
@@ -44,6 +44,15 @@ export async function handle(
             .join(" "),
         },
         400,
+      );
+    if (error instanceof OriginRejection)
+      return json(
+        {
+          error: error.message,
+          code: error.code,
+          originCheck: error.originCheck,
+        },
+        error.status,
       );
     if (error instanceof AppError)
       return json({ error: error.message }, error.status);

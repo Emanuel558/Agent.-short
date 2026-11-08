@@ -45,28 +45,99 @@ export function configuredAppOrigin(): string | null {
   return new URL(`https://${name}-3000.${domain}`).origin;
 }
 
-export function assertSameOrigin(request: Request): void {
-  const forbidden = () =>
-    new AppError(
+/** A narrow allowance for the tunnel's documented Host/Origin rewrite.
+ * Fetch Metadata cannot be forged by cross-origin browser JavaScript. Still
+ * require an exact configured Codespace host, HTTPS forwarding and matching
+ * loopback Origin/Host/port. Forwarded headers alone never authorize a write.
+ */
+function isCodespacesRewrite(
+  request: Request,
+  actual: string | null,
+  expected: string | null,
+): boolean {
+  if (
+    !actual ||
+    !expected ||
+    !process.env.CODESPACE_NAME ||
+    request.headers.get("sec-fetch-site") !== "same-origin"
+  )
+    return false;
+  const internal = new URL(actual);
+  const external = new URL(expected);
+  const domain =
+    process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || "app.github.dev";
+  if (
+    !internal.port ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(internal.hostname)
+  )
+    return false;
+  if (
+    external.protocol !== "https:" ||
+    external.port ||
+    external.hostname !==
+      `${process.env.CODESPACE_NAME}-${internal.port}.${domain}`.toLowerCase()
+  )
+    return false;
+  const backend = parseOrigin(
+    `${internal.protocol}//${request.headers.get("host") || ""}`,
+  );
+  const forwarded = parseOrigin(
+    `https://${request.headers.get("x-forwarded-host") || ""}`,
+  );
+  return (
+    backend === actual &&
+    forwarded === expected &&
+    request.headers.get("x-forwarded-proto") === "https"
+  );
+}
+
+export class OriginRejection extends AppError {
+  constructor(
+    public readonly code: "CSRF_FETCH_SITE" | "CSRF_ORIGIN_MISMATCH",
+    public readonly originCheck: {
+      received: string | null;
+      expected: string | null;
+      source: "APP_ORIGIN" | "codespaces" | "direct";
+      forwardedOrigin: string | null;
+      backendOrigin: string | null;
+    },
+  ) {
+    super(
       403,
-      "Cross-site requests are not allowed. Open this Codespace’s private port 3000 URL, or set server-side APP_ORIGIN to the exact app origin and restart Next.js.",
+      "Cross-site requests are not allowed. See the response's originCheck fields for the compared origins and configuration source.",
     );
-  if (request.headers.get("sec-fetch-site") === "cross-site") throw forbidden();
+  }
+}
+
+export function assertSameOrigin(request: Request): void {
   const supplied = request.headers.get("origin");
-  // Non-browser tools can omit Origin, as before. JSON-only bodies and Fetch
-  // Metadata protection still apply; this single-user app relies on a private port.
-  if (supplied === null) return;
-  const actual = parseOrigin(supplied);
+  const actual = supplied === null ? null : parseOrigin(supplied);
   const url = new URL(request.url);
-  // On a direct connection Next.js can use its bind address (0.0.0.0) in the
-  // request URL. Host is the browser's destination, unlike forwarded headers.
   const directOrigin = parseOrigin(
     `${url.protocol}//${request.headers.get("host") || url.host}`,
   );
-  const expected = configuredAppOrigin() || directOrigin;
-  // Compare the complete normalized origin (scheme, hostname and port). Codespaces
-  // may rewrite Host/URL to localhost, so pin its external origin independently.
-  // X-Forwarded-Host/Proto can be absent, rewritten, or comma-separated: none of
-  // them may grant an origin access. Other Codespaces are not implicitly trusted.
-  if (!actual || actual !== expected) throw forbidden();
+  const configured = configuredAppOrigin();
+  const expected = configured || directOrigin;
+  // Only normalized origins are returned for diagnosis; never echo raw headers,
+  // cookies, request content, credentials or environment secret values.
+  const details = {
+    received: actual,
+    expected,
+    source: (process.env.APP_ORIGIN
+      ? "APP_ORIGIN"
+      : configured
+        ? "codespaces"
+        : "direct") as "APP_ORIGIN" | "codespaces" | "direct",
+    backendOrigin: directOrigin,
+    forwardedOrigin: parseOrigin(
+      `https://${request.headers.get("x-forwarded-host") || ""}`,
+    ),
+  };
+  if (request.headers.get("sec-fetch-site") === "cross-site")
+    throw new OriginRejection("CSRF_FETCH_SITE", details);
+  // Preserve JSON CLI requests without Origin. Content-type/size checks follow.
+  if (supplied === null) return;
+  if (actual && actual === expected) return;
+  if (isCodespacesRewrite(request, actual, configured)) return;
+  throw new OriginRejection("CSRF_ORIGIN_MISMATCH", details);
 }

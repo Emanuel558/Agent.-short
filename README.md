@@ -96,7 +96,7 @@ The earlier `AI_PROVIDER=openai-compatible`, `AI_BASE_URL`, `AI_MODEL`, and `AI_
 
 Select **Demo** in Settings and save. It works independently of Gemini/Ollama configuration and performs no model network calls. Output remains a clearly labeled outline, not researched AI narration. Valid unsaved edits are now saved before generating; an edited title no longer silently disables generation. Invalid scene timing still produces an error without replacing your script.
 
-If you see **Cross-site requests are not allowed**, generation has not reached any provider. Pull the latest Phase 1 branch and restart the correct checkout (see restart steps below). Use private forwarded port 3000. For a different forwarded port or proxy address, set `APP_ORIGIN` in `.env.local` to the **exact browser origin**, such as `https://your-codespace-name-3001.app.github.dev`, then restart. Never use a wildcard or disable origin checks. The same setting controls development/HMR access.
+If you see **Cross-site requests are not allowed**, generation has not reached a model. Read the response's `code` and `originCheck`: it reports the normalized origins compared and whether the expected value came from `APP_ORIGIN`, Codespaces, or the direct request. The tunnel can rewrite **Origin as well as Host** to localhost; the narrow Codespaces rewrite path handles that without a wildcard or a global localhost allowance. See [the reproduction and live acceptance guide](docs/ORIGIN_REGRESSION.md) before changing configuration.
 
 ## Data and privacy
 
@@ -123,7 +123,7 @@ npm run test:e2e
 
 These install browser-test dependencies **inside Codespaces**, never on your computer. E2E tests start their own development server on port 3001 with an isolated, ignored database. They override any inherited key with an obvious test-only dummy key and preload `tests/helpers/gemini-fetch.mjs` to intercept Google requests. The real browser → API route → provider → SQLite path is exercised for Shorts, long-form, and quota recovery without calling Google. This fixture is never loaded by normal `npm run dev` or `npm start`, and cannot establish that your live account/key works. Close any other process using that port first. On a Linux environment with Chromium already installed, you may use `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e`.
 
-GitHub Actions runs Vitest, TypeScript checks, a production build, and Chromium workflow tests on Node 22. The lockfile pins installed dependencies. For production-mode testing in your private Codespace, use `npm run build` then `npm start`.
+After `npm run build`, run `npm run test:forwarded` to exercise the production Next.js routes with a raw HTTP client reproducing the tunnel Origin/Host rewrite. GitHub Actions runs Vitest, TypeScript checks, a production build, this forwarded integration test, and Chromium workflow tests on Node 22. The lockfile pins installed dependencies. For production-mode testing in your private Codespace, use `npm run build` then `npm start`.
 
 ## Architecture
 
@@ -147,7 +147,7 @@ See [the six-phase development plan](docs/DEVELOPMENT_PLAN.md) and [Phase 1 acce
 
 ## Codespaces origin checks and browser extensions
 
-The API compares the complete browser origin (scheme, hostname, and port). In a Codespace, its one allowed public origin is derived from `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` for forwarded port **3000**. Proxy-rewritten localhost hosts and missing or comma-separated forwarding headers do not change that trusted origin. Other Codespaces and arbitrary `X-Forwarded-Host` values do not grant access. Next.js development/HMR access uses the same configured hostname; no wildcard is allowed. JSON content-type/body limits and cross-site request protections remain enabled.
+The API compares the complete browser origin (scheme, hostname, and port). In a Codespace, its one allowed public origin is derived from `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` for forwarded port **3000**. An unchanged public Origin is checked directly. A rewritten loopback Origin requires matching backend Host/port, one exact pinned X-Forwarded-Host, HTTPS forwarding and browser same-origin Fetch Metadata; missing or ambiguous proof is rejected. Other Codespaces and arbitrary `X-Forwarded-Host` values do not grant access. Next.js development/HMR access uses the same configured hostname; no wildcard is allowed. JSON content-type/body limits and cross-site request protections remain enabled.
 
 For a different forwarded port or a custom proxy, set **one exact browser origin** as server-only `APP_ORIGIN` in `.env.local`, then restart. For example: `APP_ORIGIN=https://your-codespace-name-4000.app.github.dev`. Do not add `*.app.github.dev`, a list of origins, or a URL path. Standard port-3000 Codespaces users need no new setting.
 
@@ -166,3 +166,5 @@ Grammarly can add `data-new-gr-c-s-check-loaded` and `data-gr-ext-installed` to 
 3. Open **Ports → 3000 → Open in Browser**, keeping visibility **Private**. Refresh the page fully (Ctrl+Shift+R). Do not use another Codespace's URL or an old forwarded port.
 4. With Grammarly enabled if available, open **Create Video**, create a test project, generate a demo script, edit, save, reload, and export. You should see no cross-site error and no hydration warning about the two extension attributes on `body`.
 5. To repeat automated checks in the Codespace: `npm test`, `npm run typecheck`, `npm run build`, then `npm run test:e2e` (install the test browser using the earlier README instructions if needed). The browser suite uses its own loopback-only server and isolated database.
+
+The [origin regression report](docs/ORIGIN_REGRESSION.md) separates reproduced defects from live acceptance. The [proposed development workflow](docs/DEVELOPMENT_WORKFLOW.md) defines evidence and acceptance gates for future work; Phase 2 remains unapproved.
