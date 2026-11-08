@@ -1,10 +1,18 @@
 # Gemini model diagnosis and explicit selection
 
+## Current outcome: Gemini 3.1 Flash-Lite
+
+The user independently tested the official `v1beta` endpoints with the existing Codespaces key: `models.get` and minimal `generateContent` both returned HTTP 200 for `gemini-3.1-flash-lite`; 2.5 Flash-Lite generation returned 404 with the same key. This isolates a model-specific access/availability difference, not an AutoTube-only failure or blanket project/API-version failure. Google's [2.5 model notice](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite) limits access based on prior active usage, which is consistent with the evidence; no project-specific entitlement record was inspected.
+
+The reviewed catalog now includes `gemini-3.1-flash-lite`. Google's [Standard text pricing](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite), checked 2026-11-08, lists free-tier input and output. It is recommended first when returned by discovery with `generateContent` support, but never selected automatically. The distinct image model is not added. Existing 2.5 selections/defaults, the API key, project documents and revisions remain intact.
+
+Use Settings → Check available Gemini models → choose `gemini-3.1-flash-lite` → Save Gemini model. Select Google Gemini and Save provider, then open a project and Generate with Gemini. Reload to verify persistence. The user's direct successful control is separate from the full structured-script browser acceptance; our automated generation uses mocked Google responses.
+
 ## What the original message proves
 
 The old adapter combined upstream HTTP **400** and **404** into “model unavailable or request unsupported.” That message cannot establish the exact Google cause: 404 can mean model/API-version/method availability, while 400 can mean unsupported parameters, schema fields, or an invalid key. The user's raw Google status/body was not retained, so it cannot be reconstructed retrospectively. Do not claim the old model is definitely unavailable based on that message alone.
 
-The assistant cannot access the user's live Codespace secret in its separate environment. Tests with a dummy key do not establish the user's live model access. A live models response and, if needed, the new safe generation diagnostic are required for account-specific conclusions.
+The assistant cannot access the user's live Codespace secret in its separate environment. Tests with a dummy key do not establish live model access; the direct live result above was reported by the user.
 
 ## Safe errors
 
@@ -12,7 +20,7 @@ Generation and model discovery now return `code: GEMINI_API_ERROR` with a `diagn
 
 ## Investigating the reported generation 404
 
-The latest live capture establishes **Google HTTP 404 / NOT_FOUND during generateContent**. AutoTube maps upstream failures to browser HTTP 502; that wrapper is not another Google status. The capture does not include the selected model or its request path, so it still cannot establish an ID/version mismatch or a removed model.
+The reported 2.5 failure is **Google HTTP 404 / NOT_FOUND during generateContent**. AutoTube maps upstream failures to browser HTTP 502; that wrapper is not another Google status. Subsequent diagnostics confirmed matching saved/requested IDs and `v1beta`, with discovery advertising the method. The direct controls above then established a model-specific difference outside AutoTube.
 
 The code trace uses these official endpoints, both with `GEMINI_API_KEY` in the `x-goog-api-key` header:
 
@@ -62,9 +70,9 @@ In Settings or the Script Studio provider card, click **Check available Gemini m
 
 This operation fetches metadata only: it does not generate text, change the provider/model/key, enable an API service, or enable billing. Model metadata does not report account billing, remaining free quota, or guarantee a successful generation request.
 
-For available models, the UI intersects the model list with a small reviewed free-tier catalog. It recommends **gemini-2.5-flash-lite** if listed, then the existing **gemini-2.5-flash** if listed. Unknown-pricing and paid-only models are not selectable through this workflow and are blocked before generation. If there is no reviewed candidate, use Demo. Review the catalog against current pricing when adding another model; do not guess by model name.
+For available models, the UI intersects the model list with a small reviewed free-tier catalog. It recommends **gemini-3.1-flash-lite** if listed, then **gemini-2.5-flash-lite**, then **gemini-2.5-flash**. Recommendation never changes an existing selection. Unknown-pricing and paid-only models are not selectable through this workflow and are blocked before generation. If there is no reviewed candidate, use Demo. Review the catalog against current pricing when adding another model; do not guess by model name.
 
-Google documents free Standard-tier text input/output for [Gemini 2.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite). Recommendation remains conditional on the key's model listing and account access. Free-tier eligibility, usage limits and account billing are controlled by Google; an already-billed project can incur charges. The app cannot infer billing status from the model list. The older Flash ID has a documented alias transition from December 1, 2026; keep reviewing [Google's pricing/model notices](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash).
+Google documents free Standard-tier text input/output for [Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite). Recommendation remains conditional on the key's model listing and account access. Free-tier eligibility, usage limits and account billing are controlled by Google; an already-billed project can incur charges. The app cannot infer billing status from the model list. Keep reviewing Google's current model availability and pricing notices.
 
 ## Change the model without changing the key
 

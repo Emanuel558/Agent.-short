@@ -119,83 +119,92 @@ test("Gemini usage-limit errors reach the browser without losing saved scripts",
   await request.put("/api/provider", { data: { provider: "demo" } });
 });
 
-test("discover and explicitly save a free-tier candidate, then generate without changing keys", async ({
-  page,
-  request,
-}) => {
-  const p = await (
-    await request.post("/api/projects", {
-      data: {
-        title: "Discovered model test",
-        topic: "Original creative storytelling",
-        language: "en",
-        format: "short",
-        duration: 60,
-      },
-    })
-  ).json();
-  await page.goto(`/?view=studio&project=${p.id}`);
-  await page
-    .getByRole("button", { name: "Check available Gemini models", exact: true })
-    .click();
-  await expect(
-    page.getByText("Recommended candidate:", { exact: false }),
-  ).toContainText("gemini-2.5-flash-lite");
-  await expect(
-    page
+for (const { model, view } of [
+  { model: "gemini-3.1-flash-lite", view: "settings" },
+  { model: "gemini-2.5-flash-lite", view: "studio" },
+]) {
+  test(`discover and explicitly save ${model}, then generate without changing keys`, async ({
+    page,
+    request,
+  }) => {
+    const p = await (
+      await request.post("/api/projects", {
+        data: {
+          title: "Discovered model test",
+          topic: "Original creative storytelling",
+          language: "en",
+          format: "short",
+          duration: 60,
+        },
+      })
+    ).json();
+    await page.goto(
+      view === "settings" ? "/?view=settings" : `/?view=studio&project=${p.id}`,
+    );
+    await page
+      .getByRole("button", { name: "Check available Gemini models", exact: true })
+      .click();
+    await expect(
+      page.getByText("Recommended candidate:", { exact: false }),
+    ).toContainText("gemini-3.1-flash-lite");
+    await expect(
+      page
+        .getByLabel("Available free-tier model")
+        .getByRole("option", { name: "unknown-priced-model", exact: true }),
+    ).toHaveCount(0);
+    await page
       .getByLabel("Available free-tier model")
-      .getByRole("option", { name: "unknown-priced-model", exact: true }),
-  ).toHaveCount(0);
-  await page
-    .getByLabel("Available free-tier model")
-    .selectOption("gemini-2.5-flash-lite");
-  await page
-    .getByRole("button", { name: "Save Gemini model", exact: true })
-    .click();
-  await expect(page.getByTestId("gemini-key-status")).toContainText(
-    "gemini-2.5-flash-lite",
-  );
-  const discovery = await (
-    await request.post("/api/gemini/models", { data: {} })
-  ).json();
-  expect(discovery.apiVersion).toBe("v1beta");
-  expect(discovery.generationRequest).toMatchObject({
-    savedModelId: "gemini-2.5-flash-lite",
-    selectedModelId: "gemini-2.5-flash-lite",
-    modelSource: "saved selection",
-    requestPath: "/v1beta/models/gemini-2.5-flash-lite:generateContent",
+      .selectOption(model);
+    await page
+      .getByRole("button", { name: "Save Gemini model", exact: true })
+      .click();
+    await expect(page.getByTestId("gemini-key-status")).toContainText(model);
+    const discovery = await (
+      await request.post("/api/gemini/models", { data: {} })
+    ).json();
+    expect(discovery.apiVersion).toBe("v1beta");
+    expect(discovery.generationRequest).toMatchObject({
+      savedModelId: model,
+      selectedModelId: model,
+      modelSource: "saved selection",
+      requestPath: `/v1beta/models/${model}:generateContent`,
+    });
+    await page.getByLabel("Script provider").selectOption("gemini");
+    await page
+      .getByRole("button", { name: "Save provider", exact: true })
+      .click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Provider saved" }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("gemini-key-status")).toContainText(model);
+    await expect(page.getByLabel("Script provider")).toHaveValue("gemini");
+    // Saving provider/model preferences must not rewrite an existing project.
+    expect(await (await request.get(`/api/projects/${p.id}`)).json()).toEqual(p);
+    await page.goto(`/?view=studio&project=${p.id}`);
+    await page
+      .getByRole("button", { name: "Generate with Gemini", exact: true })
+      .first()
+      .click();
+    await expect(
+      page.getByText("Gemini-generated draft · review required"),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("gemini-key-status")).toContainText(model);
+    expect(await (await request.get("/api/provider")).text()).not.toContain(
+      "autotube-e2e-gemini-key",
+    );
+    await page
+      .getByRole("button", {
+        name: "Use server GEMINI_MODEL setting",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByTestId("gemini-key-status")).toContainText(
+      "gemini-2.5-flash.",
+    );
   });
-  await page.getByLabel("Script provider").selectOption("gemini");
-  await page
-    .getByRole("button", { name: "Save provider", exact: true })
-    .click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Provider saved" }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Generate with Gemini", exact: true })
-    .first()
-    .click();
-  await expect(
-    page.getByText("Gemini-generated draft · review required"),
-  ).toBeVisible();
-  await page.reload();
-  await expect(page.getByTestId("gemini-key-status")).toContainText(
-    "gemini-2.5-flash-lite",
-  );
-  expect(await (await request.get("/api/provider")).text()).not.toContain(
-    "autotube-e2e-gemini-key",
-  );
-  await page
-    .getByRole("button", {
-      name: "Use server GEMINI_MODEL setting",
-      exact: true,
-    })
-    .click();
-  await expect(page.getByTestId("gemini-key-status")).toContainText(
-    "gemini-2.5-flash.",
-  );
-});
+}
 
 test("a listed model returning 404 reports the saved selection and actual request without losing scripts", async ({
   page,

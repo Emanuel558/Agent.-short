@@ -139,7 +139,7 @@ export function GeminiModels({
         content or enable billing. An already-billed Google project may incur
         charges when you generate.{" "}
         <a
-          href="https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite"
+          href="https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite"
           target="_blank"
           rel="noreferrer"
         >

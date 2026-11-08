@@ -75,6 +75,10 @@ it("lists paginated generateContent models with the same server key and no key q
       Response.json({
         models: [
           {
+            name: "models/gemini-3.1-flash-lite",
+            supportedGenerationMethods: ["generateContent"],
+          },
+          {
             name: "models/gemini-2.5-flash-lite",
             supportedGenerationMethods: ["generateContent"],
           },
@@ -104,6 +108,7 @@ it("lists paginated generateContent models with the same server key and no key q
   const models = await listGeminiModels();
   expect(models).toEqual([
     { id: "gemini-2.5-flash-lite", freeTierDocumented: true },
+    { id: "gemini-3.1-flash-lite", freeTierDocumented: true },
     { id: "unknown-priced-model", freeTierDocumented: false },
   ]);
   expect(mock.mock.calls[0][0]).toBe(
@@ -263,15 +268,84 @@ it("recognizes a Google API_KEY_INVALID reason at HTTP 400 without exposing its 
   );
 });
 
-it("blocks an unreviewed model before any inference request", async () => {
-  const { GeminiProvider } = await import("../src/lib/providers/gemini");
-  const mock = vi.fn();
-  vi.stubGlobal("fetch", mock);
-  await expect(
-    new GeminiProvider("unknown-priced-model").generate(brief),
-  ).rejects.toMatchObject({ status: 503 });
-  expect(mock).not.toHaveBeenCalled();
-});
+it.each(["unknown-priced-model", "gemini-3.1-flash-lite-image"])(
+  "blocks an unreviewed model before any inference request: %s",
+  async (model) => {
+    const mock = vi.fn();
+    vi.stubGlobal("fetch", mock);
+    await expect(
+      new GeminiProvider(model).generate(brief),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(mock).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["short", "long"] as const)(
+  "uses a saved Gemini 3.1 selection after reopening SQLite for a %s script, preserving prior revisions",
+  async (format) => {
+    const dir = mkdtempSync(join(tmpdir(), "autotube-gemini-31-"));
+    const path = join(dir, "projects.sqlite");
+    let repo = new ProjectRepository(path);
+    try {
+      const duration = format === "short" ? 60 : 300;
+      const project = repo.create({ ...brief, format, duration });
+      const prior = await generateProject(
+        repo,
+        project.id,
+        project.version,
+        new DemoProvider(),
+      );
+      const history = repo.history(project.id);
+      repo.setSetting("text-provider", "gemini");
+      repo.setSetting("gemini-model", "gemini-3.1-flash-lite");
+      repo.close();
+      repo = new ProjectRepository(path);
+      expect(repo.get(project.id)).toEqual(prior);
+      expect(repo.history(project.id)).toEqual(history);
+      const scenes = [{
+        heading: "Original Gemini 3.1 draft",
+        narration: "Begin an original story by asking a new question.",
+        visual: "Record your own notebook and research notes.",
+        duration,
+      }];
+      const mock = vi.fn().mockResolvedValue(
+        Response.json({
+          candidates: [{
+            finishReason: "STOP",
+            content: { parts: [{ text: JSON.stringify({ scenes }) }] },
+          }],
+        }),
+      );
+      vi.stubGlobal("fetch", mock);
+      const generated = await generateProject(repo, project.id, prior.version);
+      expect(generated.provider).toBe("gemini");
+      expect(generated.status).toBe("script_ready");
+      expect(generated.scenes[0].heading).toBe("Original Gemini 3.1 draft");
+      expect(generated.scenes[0].duration).toBe(duration);
+      expect(mock).toHaveBeenCalledTimes(1);
+      const [url, init] = mock.mock.calls[0];
+      expect(url).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent",
+      );
+      expect(init.headers["x-goog-api-key"]).toBe("test-private-model-key");
+      const config = JSON.parse(init.body).generationConfig;
+      expect(config.responseMimeType).toBe("application/json");
+      expect(config.responseJsonSchema).toBeTruthy();
+      for (const revision of history)
+        expect(
+          repo.history(project.id).find(r => r.version === revision.version),
+        ).toEqual(revision);
+      repo.close();
+      repo = new ProjectRepository(path);
+      expect(repo.getSetting("gemini-model")).toBe("gemini-3.1-flash-lite");
+      expect(repo.get(project.id)).toEqual(generated);
+      expect(process.env.GEMINI_API_KEY).toBe("test-private-model-key");
+    } finally {
+      repo.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 it("traces a persisted SQLite selection to the exact generation URL when listing succeeds but generation returns 404", async () => {
   const dir = mkdtempSync(join(tmpdir(), "autotube-gemini-404-"));

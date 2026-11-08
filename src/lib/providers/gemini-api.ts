@@ -2,8 +2,10 @@ import { AppError } from "../errors";
 export const GEMINI_API_VERSION = "v1beta";
 export const GEMINI_API = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}`;
 // Reviewed against Google's Standard (not Batch) pricing on 2026-11-08.
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite
 // Listing models does NOT establish billing status or remaining free quota.
 export const FREE_TIER_MODELS = [
+  "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
 ] as const;

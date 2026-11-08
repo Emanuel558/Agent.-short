@@ -20,6 +20,10 @@ globalThis.fetch = async function (input, init) {
     return Response.json({
       models: [
         {
+          name: "models/gemini-3.1-flash-lite",
+          supportedGenerationMethods: ["generateContent", "countTokens"],
+        },
+        {
           name: "models/gemini-2.5-flash-lite",
           supportedGenerationMethods: ["generateContent", "countTokens"],
         },
@@ -39,6 +43,7 @@ globalThis.fetch = async function (input, init) {
     });
   if (
     ![
+      "/v1beta/models/gemini-3.1-flash-lite:generateContent",
       "/v1beta/models/gemini-2.5-flash:generateContent",
       "/v1beta/models/gemini-2.5-flash-lite:generateContent",
     ].includes(url.pathname)
