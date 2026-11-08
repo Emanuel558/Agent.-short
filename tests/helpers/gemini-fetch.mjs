@@ -52,6 +52,11 @@ globalThis.fetch = async function (input, init) {
   const payload = JSON.parse(init.body);
   if (payload.generationConfig?.responseMimeType !== "application/json")
     throw new Error("Expected structured Gemini output");
+  // Contract fixture: refuse a full validation document at this boundary.
+  // This simulates schema rejection; it is not evidence of Google's exact
+  // rejected keyword for the user's key.
+  if (payload.generationConfig.responseJsonSchema?.$schema)
+    return Response.json({ error: { status: "INVALID_ARGUMENT", message: 'Unsupported keyword "$schema"' } }, { status: 400 });
   const prompt = payload.contents[0].parts[0].text;
   if (prompt.includes("simulate Gemini model not found"))
     return Response.json(

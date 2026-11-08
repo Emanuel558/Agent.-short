@@ -6,5 +6,8 @@ globalThis.fetch = async (url, init) => {
   if (new Headers(init?.headers).get("x-goog-api-key") !== "diagnostic-fixture-key")
     throw new Error("Unexpected diagnostic credential");
   if (++calls > 6) throw new Error("Diagnostic exceeded request limit");
+  const payload = JSON.parse(init.body);
+  if (process.env.DIAGNOSTIC_FIXTURE_SCHEMA_REJECT === "1" && payload.generationConfig?.responseJsonSchema?.$schema)
+    return Response.json({ error: { status: "INVALID_ARGUMENT", message: 'Unsupported keyword "$schema" SECRET_RAW_RESPONSE' } }, { status: 400 });
   return Response.json({ text: "SECRET_RAW_RESPONSE" });
 };

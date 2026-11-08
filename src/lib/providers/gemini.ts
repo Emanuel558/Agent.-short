@@ -9,7 +9,10 @@ import {
   apiError,
   GEMINI_API,
 } from "./gemini-api";
-import { parseGenerated, responseJsonSchema, scriptPrompt } from "./output";
+import { parseGenerated, responseJsonSchema as validationJsonSchema, scriptPrompt } from "./output";
+import { geminiResponseJsonSchema } from "./gemini-schema";
+// The terminal diagnostic uses these existing helpers without another loader.
+export { apiError, validationJsonSchema };
 export class GeminiProvider implements TextProvider {
   readonly id = "gemini" as const;
   constructor(private readonly modelOverride?: string) {}
@@ -22,7 +25,7 @@ export class GeminiProvider implements TextProvider {
     const prompt = scriptPrompt(brief);
     const generationConfig = {
       responseMimeType: "application/json",
-      responseJsonSchema,
+      responseJsonSchema: geminiResponseJsonSchema,
       maxOutputTokens: 16384,
       temperature: 0.7,
     };
@@ -56,7 +59,7 @@ export class GeminiProvider implements TextProvider {
       error.diagnostic.payload = {
         requestBytes: Buffer.byteLength(requestBody),
         promptBytes: Buffer.byteLength(prompt),
-        schemaBytes: Buffer.byteLength(JSON.stringify(responseJsonSchema)),
+        schemaBytes: Buffer.byteLength(JSON.stringify(geminiResponseJsonSchema)),
         maxOutputTokens: generationConfig.maxOutputTokens,
         responseMimeType: generationConfig.responseMimeType,
         temperature: generationConfig.temperature,

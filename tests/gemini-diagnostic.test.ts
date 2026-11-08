@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { runGeminiDiagnostic, type DiagnosticRow, type DiagnosticServer } from "../scripts/gemini-diagnostic";
+import { apiError } from "../src/lib/providers/gemini-api";
+import { responseJsonSchema } from "../src/lib/providers/output";
 
 const key = "diagnostic-private-key";
 const marker = "PRIVATE_PROMPT_SCRIPT_ERROR";
@@ -16,7 +18,7 @@ function secretError(code?: string) {
   return Object.assign(new Error(`${key} ${marker}`), code ? { code } : {});
 }
 function adapter(body = JSON.stringify(app), url = endpoint) {
-  return { GeminiProvider: class {
+  return { apiError, validationJsonSchema: responseJsonSchema, GeminiProvider: class {
     async generate() {
       await fetch(url, { method: "POST", headers: { "x-goog-api-key": key }, body });
       throw secretError(); // Expected rejection after intercepted HTTP 400.
@@ -214,19 +216,68 @@ it("identifies adapter exports and a missing key before sending requests", async
   expect(missing.dependencies.createServer).not.toHaveBeenCalled();
 });
 
-it("runs the checked-in CLI with real Vite/adapter loading from outside the repository", async () => {
+it.each([false, true])("runs the checked-in CLI with real Vite/adapter loading from outside the repository; schema comparison=%s", async schemaComparison => {
   const script = fileURLToPath(new URL("../scripts/gemini-diagnostic.ts", import.meta.url));
   const mock = new URL("./helpers/diagnostic-fetch.mjs", import.meta.url).href;
-  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--experimental-strip-types", script], {
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--experimental-strip-types", script, ...(schemaComparison ? ["--schema-compare"] : [])], {
     cwd: tmpdir(),
-    env: { ...process.env, GEMINI_API_KEY: "diagnostic-fixture-key", NODE_OPTIONS: `--import=${mock}` },
+    env: { ...process.env, GEMINI_API_KEY: "diagnostic-fixture-key", NODE_OPTIONS: `--import=${mock}`, DIAGNOSTIC_FIXTURE_SCHEMA_REJECT: schemaComparison ? "1" : "0" },
     timeout: 30000,
   });
   const rows: DiagnosticRow[] = stdout.trim().split("\n").map(line => JSON.parse(line));
-  expect(rows.filter(r => r.classification === "ACCEPTED")).toHaveLength(6);
+  expect(rows.filter(r => r.classification === "ACCEPTED")).toHaveLength(schemaComparison ? 3 : 6);
+  if (schemaComparison) expect(rows).toContainEqual(expect.objectContaining({
+    variant: "schema-original", httpStatus: 400, classification: "SCHEMA_REJECTED",
+    schema: expect.objectContaining({ rejectedKeywords: ["$schema"] }),
+  }));
   expect(rows).toContainEqual(expect.objectContaining({ stage: "adapter-loading", classification: "OK" }));
   expect(rows).toContainEqual(expect.objectContaining({ stage: "request-capture", classification: "OK", requestsSent: 0 }));
-  expect(rows.at(-1)?.requestsSent).toBe(6);
+  expect(rows.at(-1)?.requestsSent).toBe(schemaComparison ? 4 : 6);
   expect(stdout + stderr).not.toContain("diagnostic-fixture-key");
   expect(stdout + stderr).not.toContain("SECRET_RAW_RESPONSE");
 }, 35000);
+
+it("compares original and compatible schemas in four distinct requests and safely identifies a rejected field", async () => {
+  const h = harness();
+  h.transport.mockImplementation(async (_url, init) => {
+    const config = JSON.parse(init.body).generationConfig;
+    return config.responseJsonSchema?.$schema
+      ? Response.json({ error: { status: "INVALID_ARGUMENT", message: `Unknown name "$schema" ${key} ${marker}` } }, { status: 400 })
+      : Response.json({ text: marker });
+  });
+  expect(await runGeminiDiagnostic({ ...h.dependencies, schemaComparison: true })).toEqual({ ok: true, requestsSent: 4 });
+  expect(h.transport).toHaveBeenCalledTimes(4);
+  expect(h.rows).toContainEqual(expect.objectContaining({ variant: "schema-original", httpStatus: 400, schemaDetailAvailable: true, schema: { rejectedKeywords: ["$schema"], fieldPaths: [], complexityLimit: false } }));
+  expect(h.rows.at(-1)).toMatchObject({ variant: "schema-compatible-full-limit", httpStatus: 200 });
+  privateOutput(h.rows);
+});
+
+it.each(["credential", "compatible"])("stops schema comparison on a %s failure instead of treating it as an expected original rejection", async failure => {
+  const h = harness();
+  let calls = 0;
+  h.transport.mockImplementation(async () => {
+    calls++;
+    if (failure === "credential" && calls === 2) return Response.json({ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } }, { status: 400 });
+    if (failure === "compatible" && calls === 3) return Response.json({ error: { status: "INVALID_ARGUMENT", message: 'Unsupported keyword "items"' } }, { status: 400 });
+    return Response.json({});
+  });
+  const result = await runGeminiDiagnostic({ ...h.dependencies, schemaComparison: true });
+  expect(result).toEqual({ ok: false, requestsSent: failure === "credential" ? 2 : 3 });
+  privateOutput(h.rows);
+});
+it("reports missing provider field detail honestly rather than inventing a schema keyword", async () => {
+  const h = harness();
+  h.transport.mockImplementation(async () => Response.json({ error: { status: "INVALID_ARGUMENT", message: `${key} ${marker}` } }, { status: 400 }));
+  expect((await runGeminiDiagnostic(h.dependencies)).ok).toBe(false);
+  expect(h.rows.at(-1)).toMatchObject({ httpStatus: 400, schemaDetailAvailable: false });
+  expect(h.rows.at(-1)).not.toHaveProperty("schema");
+  privateOutput(h.rows);
+});
+it("distinguishes rejection of the outer request field from an inner schema keyword", async () => {
+  const h = harness();
+  h.transport.mockImplementation(async () => Response.json({ error: { status: "INVALID_ARGUMENT", message: `Unknown name "response_json_schema" at generation_config ${key}` } }, { status: 400 }));
+  expect((await runGeminiDiagnostic(h.dependencies)).ok).toBe(false);
+  expect(h.rows.at(-1)).toMatchObject({ classification: "UNSUPPORTED_REQUEST_FIELD", invalidFields: ["responseJsonSchema"], schemaDetailAvailable: false });
+  expect(h.rows.at(-1)).not.toHaveProperty("schema");
+  privateOutput(h.rows);
+});

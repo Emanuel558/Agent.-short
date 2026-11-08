@@ -60,6 +60,8 @@ The live SQLite file, secret, and Google generation access are not accessible in
 | 404 / MODEL_NOT_FOUND                                       | Requested model or API resource was not found. Check the official models list for generateContent support.                                    |
 | 400 / UNSUPPORTED_REQUEST_FIELD                             | Google rejected a known request field. The diagnostic identifies its name; changing model availability alone does not establish a format fix. |
 | 400 / INVALID_REQUEST                                       | Parameters were rejected. This does not establish that the model is missing.                                                                  |
+| 400 / SCHEMA_REJECTED                                       | Google named a recognized schema keyword or known field path. `diagnostic.schema` contains only safe names/paths, never values.              |
+| 400 / SCHEMA_COMPLEXITY_LIMIT                               | Google explicitly described a schema constraint-state complexity limit. Bounds remain enforced locally by the compatible structural adapter. |
 | 400 / ACCESS_DENIED with API_KEY_INVALID or API_KEY_EXPIRED | Google specifically rejected the credential. Selecting a model does not replace or repair that key.                                           |
 | 401/403 / ACCESS_DENIED                                     | Check project permissions, restrictions and free-tier eligibility. No billing is enabled by the app.                                          |
 | 429 / QUOTA_LIMIT                                           | Wait or use Demo. Do not upgrade billing as an automatic recovery.                                                                            |

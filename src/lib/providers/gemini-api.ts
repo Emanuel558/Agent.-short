@@ -1,4 +1,5 @@
 import { AppError } from "../errors";
+import { schemaRejection, type GeminiSchemaRejection } from "./gemini-schema-error";
 export const GEMINI_API_VERSION = "v1beta";
 export const GEMINI_API = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}`;
 // Reviewed against Google's Standard (not Batch) pricing on 2026-11-08.
@@ -74,6 +75,7 @@ export interface GeminiDiagnostic {
   apiVersion: typeof GEMINI_API_VERSION;
   requestPath: string | null;
   request?: GeminiRequestContext;
+  schema?: GeminiSchemaRejection;
   payload?: {
     requestBytes: number;
     promptBytes: number;
@@ -160,6 +162,7 @@ export async function apiError(
       raw.includes(field) ||
       raw.includes(field.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)),
   );
+  const schema = schemaRejection(payload);
   let reason = "API_FAILURE",
     message = "The API request failed. Retry later or select Demo.";
   if (response.status === 429) {
@@ -182,13 +185,12 @@ export async function apiError(
     message =
       "The API reports an invalid or expired credential. Model selection does not change your key; check its project access in AI Studio.";
   } else if (response.status === 400) {
-    reason =
-      fields.length &&
-      /unknown|unsupported|not supported|invalid json/i.test(raw)
-        ? "UNSUPPORTED_REQUEST_FIELD"
-        : "INVALID_REQUEST";
-    message =
-      reason === "UNSUPPORTED_REQUEST_FIELD"
+    if (schema) reason = schema.complexityLimit ? "SCHEMA_COMPLEXITY_LIMIT" : "SCHEMA_REJECTED";
+    else reason = fields.length && /unknown|unsupported|not supported|invalid json/i.test(raw)
+      ? "UNSUPPORTED_REQUEST_FIELD" : "INVALID_REQUEST";
+    message = schema
+      ? "The API rejected the output schema. Check the safe schema keyword/path diagnostic. Your saved script is preserved."
+      : reason === "UNSUPPORTED_REQUEST_FIELD"
         ? `The API rejected request fields: ${fields.join(", ")}. Model availability alone will not repair this request format.`
         : "The API rejected the generation parameters. This is a bad-request response, not proof that the model is missing. Check the selected model and supported request format.";
   } else if (response.status >= 500) {
@@ -208,6 +210,7 @@ export async function apiError(
       request?.requestPath ||
       (operation === "models.list" ? `/${GEMINI_API_VERSION}/models` : null),
     ...(request ? { request } : {}),
+    ...(response.status === 400 && schema && reason !== "ACCESS_DENIED" ? { schema } : {}),
   });
 }
 export interface AvailableGeminiModel {

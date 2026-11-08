@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import type { GeminiSchemaRejection } from "../src/lib/providers/gemini-schema-error";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent";
@@ -10,11 +11,18 @@ export interface DiagnosticRow {
   classification: string;
   requestsSent: number;
   variant?: string;
+  schema?: GeminiSchemaRejection;
+  schemaDetailAvailable?: boolean;
+  invalidFields?: string[];
 }
 interface Provider {
   generate(brief: { title: string; topic: string; format: string; language: string; duration: number }): Promise<unknown>;
 }
-interface AdapterModule { GeminiProvider: new (model: string) => Provider }
+interface AdapterModule {
+  GeminiProvider: new (model: string) => Provider;
+  apiError?: (response: Response, operation: "generateContent") => Promise<{ diagnostic: { reason: string; schema?: GeminiSchemaRejection; invalidFields?: string[] } }>;
+  validationJsonSchema?: unknown;
+}
 export interface DiagnosticServer {
   ssrLoadModule(path: string): Promise<unknown>;
   close(): Promise<void>;
@@ -24,6 +32,7 @@ interface Dependencies {
   loadEnvironment?: () => Promise<void>;
   createServer?: () => Promise<DiagnosticServer>;
   transport?: typeof fetch;
+  schemaComparison?: boolean;
 }
 
 /** Classify only allowlisted codes/names. Never return messages or stacks. */
@@ -73,8 +82,9 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
   const transport = dependencies.transport || originalFetch;
   let stage: Stage = "environment";
   let requestsSent = 0;
-  const report = (classification: string, httpStatus: number | null = null, variant?: string) =>
-    output({ stage, httpStatus, classification, requestsSent, ...(variant ? { variant } : {}) });
+  const report = (classification: string, httpStatus: number | null = null, variant?: string,
+    details?: { schema?: GeminiSchemaRejection; schemaDetailAvailable?: boolean; invalidFields?: string[] }) =>
+    output({ stage, httpStatus, classification, requestsSent, ...(variant ? { variant } : {}), ...details });
   const begin = (next: Stage) => { stage = next; report("STARTED"); };
   let server: DiagnosticServer | undefined;
   let captured: { url: string; init: RequestInit } | undefined;
@@ -83,6 +93,8 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
   let app: { contents: unknown; generationConfig: Record<string, unknown> } | undefined;
   let ready = false;
   let cleanupOk = true;
+  let describeError: AdapterModule["apiError"];
+  let validationSchema: unknown;
   const fail = () => ({ ok: false, requestsSent });
   try {
     begin("environment");
@@ -108,6 +120,8 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
     const adapter = await server.ssrLoadModule("/src/lib/providers/gemini.ts") as Partial<AdapterModule> | null;
     if (unexpectedSetupFetch) { report("UNEXPECTED_SETUP_FETCH_BLOCKED"); return fail(); }
     if (typeof adapter?.GeminiProvider !== "function") { report("ADAPTER_EXPORT_MISSING"); return fail(); }
+    describeError = adapter.apiError;
+    validationSchema = adapter.validationJsonSchema;
     report("OK");
     begin("request-capture");
     try {
@@ -139,6 +153,9 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
       report("CAPTURE_PAYLOAD_INVALID"); return fail();
     }
     report("OK");
+    if (dependencies.schemaComparison && (!validationSchema || typeof validationSchema !== "object")) {
+      report("CAPTURE_REFERENCE_SCHEMA_MISSING"); return fail();
+    }
     ready = true;
   } catch (error) {
     const fallback = {
@@ -161,7 +178,12 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
   const variant = (extra: Record<string, unknown>) => ({
     contents: requestApp.contents, generationConfig: { maxOutputTokens: 32, ...extra },
   });
-  const comparisons = [
+  const comparisons = dependencies.schemaComparison ? [
+    ["json-mode-control", variant({ temperature: config.temperature, responseMimeType: config.responseMimeType })],
+    ["schema-original", variant({ ...config, responseJsonSchema: validationSchema, maxOutputTokens: 32 })],
+    ["schema-compatible", variant({ ...config, maxOutputTokens: 32 })],
+    ["schema-compatible-full-limit", requestApp],
+  ] as const : [
     ["minimal-current", { contents: [{ role: "user", parts: [{ text: "Reply with OK." }] }], generationConfig: { maxOutputTokens: 32 } }],
     ["app-prompt", variant({})],
     ["temperature", variant({ temperature: config.temperature })],
@@ -186,19 +208,42 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
       report(safeCategory(error, "GOOGLE_REQUEST_FAILED"), null, name);
       return fail();
     }
-    const category = response.ok ? "ACCEPTED" : ({
+    let failureReason: string | undefined;
+    let schema: GeminiSchemaRejection | undefined;
+    let invalidFields: string[] = [];
+    if (response.status === 400 && describeError) {
+      try {
+        const described = await describeError(response.clone(), "generateContent");
+        failureReason = described.diagnostic.reason;
+        schema = described.diagnostic.schema;
+        invalidFields = (described.diagnostic.invalidFields || []).filter(field =>
+          ["responseJsonSchema", "responseSchema", "responseMimeType", "maxOutputTokens", "temperature"].includes(field));
+      } catch {
+        stage = "google-response";
+        report("ERROR_DETAILS_UNREADABLE", response.status, name);
+        await response.body?.cancel().catch(() => {});
+        return fail();
+      }
+    }
+    let category = response.ok ? "ACCEPTED" : ({
       400: "INVALID_REQUEST_OR_CREDENTIAL", 401: "AUTHENTICATION_REJECTED",
       403: "ACCESS_REJECTED", 404: "MODEL_OR_RESOURCE_NOT_FOUND",
       429: "QUOTA_OR_RATE_LIMIT", 503: "SERVICE_UNAVAILABLE",
     } as Record<number, string>)[response.status] || "OTHER_HTTP_FAILURE";
-    report(category, response.status, name);
+    if (failureReason && ["SCHEMA_REJECTED", "SCHEMA_COMPLEXITY_LIMIT", "UNSUPPORTED_REQUEST_FIELD", "ACCESS_DENIED"].includes(failureReason)) category = failureReason;
+    report(category, response.status, name, response.status === 400
+      ? { ...(schema ? { schema } : {}), schemaDetailAvailable: !!schema, invalidFields } : undefined);
     try { await response.body?.cancel(); }
     catch (error) {
       stage = "google-response";
       report(safeCategory(error, "RESPONSE_CLEANUP_FAILED"), response.status, name);
       return fail();
     }
-    if (!response.ok) return fail();
+    // An opt-in, bounded schema comparison deliberately contrasts one legacy
+    // 400 with the compatible schema. This is not a retry of the same payload.
+    const expectedLegacyRejection = dependencies.schemaComparison && name === "schema-original" &&
+      response.status === 400 && failureReason !== "ACCESS_DENIED";
+    if (!response.ok && !expectedLegacyRejection) return fail();
   }
   return { ok: true, requestsSent };
 }
@@ -206,7 +251,8 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   let last: DiagnosticRow = { stage: "environment", httpStatus: null, classification: "STARTED", requestsSent: 0 };
   const output = (row: DiagnosticRow) => { last = row; console.log(JSON.stringify(row)); };
-  runGeminiDiagnostic({ report: output }).then(result => { process.exitCode = result.ok ? 0 : 1; }).catch(error => {
+  runGeminiDiagnostic({ report: output, schemaComparison: process.argv.includes("--schema-compare") })
+    .then(result => { process.exitCode = result.ok ? 0 : 1; }).catch(error => {
     // Even an unexpected diagnostic failure retains the last known phase.
     output({ ...last, classification: safeCategory(error, "INTERNAL_DIAGNOSTIC_FAILURE") });
     process.exitCode = 1;

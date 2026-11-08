@@ -1,5 +1,38 @@
 # Gemini 503 payload investigation
 
+## Current finding: schema-stage HTTP 400
+
+The user completed the live comparison with the same model/key: app prompt, temperature and JSON MIME mode returned HTTP 200, while adding the full Zod `responseJsonSchema` returned HTTP 400 at request five. This establishes rejection at the schema step for that comparison, rather than an output-token-limit failure (the failing stage still used 32 tokens). It does **not** identify which inner keyword was rejected, or establish that the earlier HTTP 503 had the same cause.
+
+An offline inspection found a full draft-2020-12 validation document: root `$schema` metadata; `minLength`/`maxLength` on strings; `minimum`/`maximum` on duration; and `minItems`/`maxItems` on scenes. The nested object/array shape, integer type, required fields and `additionalProperties: false` are supported structures. Numeric and array bounds are valid documented keywords, not malformed constraints; they still add decoder constraints. String lengths are documented as ignored by Google's decoder. There are no references, unions, enums or incompatible type combinations in this schema.
+
+The Gemini adapter now projects that document to a small **structural schema**: types, properties, items, required fields and closed objects. It omits document metadata and all bounds from the wire representation. The original strict Zod schema remains unchanged for local validation of nonempty strings, lengths, 1–60 scenes, integer duration bounds, extra properties and exact duration totals. Invalid output is rejected before saving, preserving previous scripts/history. Ollama keeps its existing schema. No API version, model selection, key, temperature, output cap, billing or automatic-retry changes accompany this compatibility change.
+
+This addresses the rejected full validation-document representation, but **live acceptance of the new schema remains to be verified**. Do not claim that `$schema`, a length limit, or a particular bound was Google's confirmed rejected keyword: the old diagnostic discarded that detail. Contract fixtures simulate rejection and do not establish which keyword Google rejected for this key.
+
+## Safe field diagnosis and original-versus-compatible comparison
+
+Google HTTP 400 responses are now inspected for `google.rpc.BadRequest.fieldViolations` and explicit rejection wording. Only fixed, recognized schema keywords and canonical paths for scenes/heading/narration/visual/duration are returned in `diagnostic.schema`. Raw descriptions, arbitrary paths/keys, values, prompts, generated content and credentials are excluded. Explicit constraint-state-budget errors receive `SCHEMA_COMPLEXITY_LIMIT`; rejected known schema fields receive `SCHEMA_REJECTED`. Invalid-key reasons retain their credential classification.
+
+The terminal diagnostic uses the same classifier. `invalidFields: ["responseJsonSchema"]` with `UNSUPPORTED_REQUEST_FIELD` identifies rejection of the outer request parameter rather than a specific inner keyword. `schemaDetailAvailable: true` means Google supplied a recognized keyword, known field path or complexity explanation; a root path alone still does not identify an inner keyword. `false` means there is no recognized field-level detail, and the script does not invent one.
+
+After pulling the Phase 1 update, run this single command from the repository:
+
+```sh
+node --experimental-strip-types scripts/gemini-diagnostic.ts --schema-compare
+```
+
+This opt-in mode makes **at most four distinct requests**, within the six-request hard cap:
+
+1. `json-mode-control`: current app prompt, temperature and JSON MIME mode, capped at 32 tokens, without a schema.
+2. `schema-original`: same input/settings with the original full Zod schema, capped at 32 tokens. If it returns 400, print safe field diagnostics and proceed once to the different compatible payload. Explicit credential failures, 403, 429, 503 and network failures stop the comparison.
+3. `schema-compatible`: same input/settings with the structural schema, capped at 32 tokens. Any failure stops here.
+4. `schema-compatible-full-limit`: the actual app settings with the compatible schema and 16,384-token cap.
+
+There are no retries of identical payloads. Only this explicit mode continues after the expected original-schema 400; the default six-step comparison below still stops on its first failure. Both modes use a harmless synthetic brief, the current server key and the same fixed model/version. They never save the diagnostic output or change SQLite, Settings or billing. A 200 at a 32-token cap establishes acceptance, not a complete valid script.
+
+Share only the JSON lines. Original 400 plus compatible 200 supports the representation change for that run. If the original is also 200, do not claim deterministic rejection of a specific keyword. If the compatible schema still fails, the safe fields distinguish an outer-parameter problem, inner-schema rejection or unavailable provider detail. Test the real project's complete script in the browser after the compatible full-limit request succeeds.
+
 ## Confirmed defect and remaining uncertainty
 
 `generateProject` passed the entire saved Project object to a provider typed to accept Brief. TypeScript does not strip extra runtime fields. Consequently, serializing the brief also sent previous scenes/scripts, previous error messages, storage IDs, status, versions and timestamps. A synthetic prior-script example increased prompt size from 689 to 10,150 UTF-8 bytes. Those are reproduction measurements, not measurements from the user's private project.
@@ -22,13 +55,13 @@ Both use the same official `v1beta/models/gemini-3.1-flash-lite:generateContent`
 | Output schema | Omitted | `responseJsonSchema`, generated from the app's Zod validator |
 | Existing script/storage fields | Absent | Present before this fix; excluded afterward |
 
-Google's [3.1 Flash-Lite model page](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite) documents structured output and a 65,536-token output maximum. Thus 16,384 is within the published limit and is a cap, not a request to always generate that many tokens. The current schema serializes to 553 bytes. Google's [structured-output guide](https://ai.google.dev/gemini-api/docs/structured-output) documents `responseJsonSchema`; it says string-length constraints emitted by Zod are ignored by the API and should be enforced locally. AutoTube already validates them locally. No unsupported-field or token-limit error was supplied, so the schema, token cap and temperature are retained instead of guessing which parameter caused a 503.
+Google's [3.1 Flash-Lite model page](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite) documents structured output and a 65,536-token output maximum. Thus 16,384 is within the published limit and is a cap, not a request to always generate that many tokens. The original Zod document serialized to 553 bytes; small byte size alone does not guarantee decoder compatibility. Google's [structured-output guide](https://ai.google.dev/gemini-api/docs/structured-output) documents `responseJsonSchema` and recommends local validation. The newly supplied schema-stage 400 prompted the structural projection above; the output cap and temperature are unchanged.
 
 The 503 is an upstream response before AutoTube parses or saves the generated JSON. Output validation cannot produce Google's `UNAVAILABLE` status. There is one inference request per click and no new automatic retries or model fallback.
 
 ## Safe failure diagnostic
 
-Generation errors now include `diagnostic.payload` with UTF-8 request/prompt/schema byte counts plus `maxOutputTokens`, `responseMimeType` and `temperature`. The diagnostic does not contain the prompt, schema content, script, topic, project IDs, raw response, key or headers. It supplements the existing model/version/path and actual upstream HTTP status. These counts help compare a failing request without exposing its contents.
+Generation errors include `diagnostic.payload` with UTF-8 request/prompt/schema byte counts plus `maxOutputTokens`, `responseMimeType` and `temperature`. Schema 400 errors additionally include only recognized schema keywords/paths when supplied by Google. The diagnostic does not contain the prompt, schema content, script, topic, project IDs, raw response, key or headers. It supplements the existing model/version/path and actual upstream HTTP status. These counts help compare a failing request without exposing its contents.
 
 ## One bounded live comparison
 
