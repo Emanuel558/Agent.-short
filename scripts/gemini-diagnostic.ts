@@ -4,7 +4,12 @@ import type { GeminiSchemaRejection } from "../src/lib/providers/gemini-schema-e
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent";
-type Stage = "environment" | "vite-setup" | "adapter-loading" | "request-capture" | "payload-validation" | "vite-cleanup" | "google-api-request" | "google-response";
+// Diagnostic control only, not an application provider/default/fallback.
+// Standard text free tier verified 2026-11-08:
+// https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite
+const CONTROL_MODEL = "gemini-3.5-flash-lite";
+const CONTROL_RESOURCE = `https://generativelanguage.googleapis.com/v1beta/models/${CONTROL_MODEL}`;
+type Stage = "environment" | "vite-setup" | "adapter-loading" | "request-capture" | "payload-validation" | "vite-cleanup" | "google-api-request" | "google-response" | "google-model-metadata";
 export interface DiagnosticRow {
   stage: Stage;
   httpStatus: number | null;
@@ -14,6 +19,10 @@ export interface DiagnosticRow {
   schema?: GeminiSchemaRejection;
   schemaDetailAvailable?: boolean;
   invalidFields?: string[];
+  model?: string;
+  profile?: { requestBytes: number; maxOutputTokens: number | null; jsonMode: boolean; schema: boolean };
+  elapsedMs?: number;
+  retryAfterSeconds?: number;
 }
 interface Provider {
   generate(brief: { title: string; topic: string; format: string; language: string; duration: number }): Promise<unknown>;
@@ -33,6 +42,30 @@ interface Dependencies {
   createServer?: () => Promise<DiagnosticServer>;
   transport?: typeof fetch;
   schemaComparison?: boolean;
+  availabilityComparison?: boolean;
+}
+
+const httpCategory = (response: Response) => response.ok ? "ACCEPTED" : ({
+  400: "INVALID_REQUEST_OR_CREDENTIAL", 401: "AUTHENTICATION_REJECTED",
+  403: "ACCESS_REJECTED", 404: "MODEL_OR_RESOURCE_NOT_FOUND",
+  429: "QUOTA_OR_RATE_LIMIT", 503: "SERVICE_UNAVAILABLE",
+} as Record<number, string>)[response.status] || "OTHER_HTTP_FAILURE";
+function retryAfter(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (raw && /^\d{1,9}$/.test(raw) && Number(raw) > 0) return Number(raw);
+  if (raw && /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), /.test(raw)) {
+    const seconds = Math.ceil((Date.parse(raw) - Date.now()) / 1000);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds;
+  }
+}
+function profile(payload: unknown): NonNullable<DiagnosticRow["profile"]> {
+  const config = (payload as { generationConfig?: Record<string, unknown> }).generationConfig;
+  return {
+    requestBytes: Buffer.byteLength(JSON.stringify(payload)),
+    maxOutputTokens: typeof config?.maxOutputTokens === "number" ? config.maxOutputTokens : null,
+    jsonMode: config?.responseMimeType === "application/json",
+    schema: !!config?.responseJsonSchema,
+  };
 }
 
 /** Classify only allowlisted codes/names. Never return messages or stacks. */
@@ -83,7 +116,7 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
   let stage: Stage = "environment";
   let requestsSent = 0;
   const report = (classification: string, httpStatus: number | null = null, variant?: string,
-    details?: { schema?: GeminiSchemaRejection; schemaDetailAvailable?: boolean; invalidFields?: string[] }) =>
+    details?: Partial<Pick<DiagnosticRow, "schema" | "schemaDetailAvailable" | "invalidFields" | "model" | "profile" | "elapsedMs" | "retryAfterSeconds">>) =>
     output({ stage, httpStatus, classification, requestsSent, ...(variant ? { variant } : {}), ...details });
   const begin = (next: Stage) => { stage = next; report("STARTED"); };
   let server: DiagnosticServer | undefined;
@@ -98,6 +131,9 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
   const fail = () => ({ ok: false, requestsSent });
   try {
     begin("environment");
+    if (dependencies.schemaComparison && dependencies.availabilityComparison) {
+      report("OPTIONS_CONFLICT"); return fail();
+    }
     await (dependencies.loadEnvironment || environment)();
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) { report("KEY_NOT_LOADED"); return fail(); }
@@ -191,12 +227,58 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
     ["json-schema", variant({ ...config, maxOutputTokens: 32 })],
     ["actual-app-settings", requestApp],
   ] as const;
+  // Availability probes share the same global six-HTTP-request counter,
+  // including the optional metadata GET. They never retry a failing payload.
+  const availabilityProbe = async (name: string, url: string, payload?: unknown): Promise<Response | undefined> => {
+    if (requestsSent >= 6) return;
+    stage = payload ? "google-api-request" : "google-model-metadata";
+    const model = url.startsWith(CONTROL_RESOURCE) ? CONTROL_MODEL : "gemini-3.1-flash-lite";
+    const details = { model, ...(payload ? { profile: profile(payload) } : {}) };
+    report("STARTED", null, name, details);
+    const started = Date.now();
+    try {
+      requestsSent++;
+      const response = await transport(url, {
+        method: payload ? "POST" : "GET", cache: "no-store", redirect: "error",
+        headers: captured!.init.headers,
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
+        signal: AbortSignal.timeout(payload ? 60000 : 15000),
+      });
+      report(httpCategory(response), response.status, name, { ...details, elapsedMs: Date.now() - started, retryAfterSeconds: retryAfter(response) });
+      return response;
+    } catch (error) {
+      report(safeCategory(error, "GOOGLE_REQUEST_FAILED"), null, name, { ...details, elapsedMs: Date.now() - started });
+    }
+  };
+  const availabilityFollowup = async (name: string) => {
+    const minimal = comparisons[0][1];
+    if (name === "minimal-current") {
+      const metadata = await availabilityProbe("alternate-model-metadata", CONTROL_RESOURCE);
+      if (!metadata) return;
+      if (!metadata.ok) { await metadata.body?.cancel().catch(() => {}); return; }
+      let model;
+      try { model = await metadata.json(); }
+      catch { report("MODEL_METADATA_UNREADABLE", 200, "alternate-model-metadata"); return; }
+      if (model?.name !== `models/${CONTROL_MODEL}` || !Array.isArray(model.supportedGenerationMethods) ||
+          !model.supportedGenerationMethods.includes("generateContent")) {
+        report("CONTROL_MODEL_NOT_ELIGIBLE", 200, "alternate-model-metadata"); return;
+      }
+      const response = await availabilityProbe("alternate-model-minimal", `${CONTROL_RESOURCE}:generateContent`, minimal);
+      await response?.body?.cancel().catch(() => {});
+    } else if (requestsSent < 6) {
+      const response = await availabilityProbe("minimal-after-failure", ENDPOINT, minimal);
+      await response?.body?.cancel().catch(() => {});
+    }
+  };
   // Independent hard cap, no retries, and stop on the first failed comparison.
   for (const [name, payload] of comparisons.slice(0, 6)) {
     if (requestsSent >= 6) return fail();
     stage = "google-api-request";
-    report("STARTED", null, name);
+    const details = dependencies.availabilityComparison
+      ? { model: "gemini-3.1-flash-lite", profile: profile(payload) } : {};
+    report("STARTED", null, name, details);
     let response: Response;
+    const started = Date.now();
     try {
       requestsSent++;
       response = await transport(ENDPOINT, {
@@ -205,7 +287,7 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
         body: JSON.stringify(payload), signal: AbortSignal.timeout(60000),
       });
     } catch (error) {
-      report(safeCategory(error, "GOOGLE_REQUEST_FAILED"), null, name);
+      report(safeCategory(error, "GOOGLE_REQUEST_FAILED"), null, name, dependencies.availabilityComparison ? { ...details, elapsedMs: Date.now() - started } : undefined);
       return fail();
     }
     let failureReason: string | undefined;
@@ -225,18 +307,22 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
         return fail();
       }
     }
-    let category = response.ok ? "ACCEPTED" : ({
-      400: "INVALID_REQUEST_OR_CREDENTIAL", 401: "AUTHENTICATION_REJECTED",
-      403: "ACCESS_REJECTED", 404: "MODEL_OR_RESOURCE_NOT_FOUND",
-      429: "QUOTA_OR_RATE_LIMIT", 503: "SERVICE_UNAVAILABLE",
-    } as Record<number, string>)[response.status] || "OTHER_HTTP_FAILURE";
+    let category = httpCategory(response);
     if (failureReason && ["SCHEMA_REJECTED", "SCHEMA_COMPLEXITY_LIMIT", "UNSUPPORTED_REQUEST_FIELD", "ACCESS_DENIED"].includes(failureReason)) category = failureReason;
-    report(category, response.status, name, response.status === 400
-      ? { ...(schema ? { schema } : {}), schemaDetailAvailable: !!schema, invalidFields } : undefined);
+    report(category, response.status, name, {
+      ...details,
+      ...(dependencies.availabilityComparison ? { elapsedMs: Date.now() - started, retryAfterSeconds: retryAfter(response) } : {}),
+      ...(response.status === 400 ? { ...(schema ? { schema } : {}), schemaDetailAvailable: !!schema, invalidFields } : {}),
+    });
     try { await response.body?.cancel(); }
     catch (error) {
       stage = "google-response";
       report(safeCategory(error, "RESPONSE_CLEANUP_FAILED"), response.status, name);
+      return fail();
+    }
+    if (dependencies.availabilityComparison && response.status === 503) {
+      // Respect an explicit provider cooldown; do not wait/retry automatically.
+      if (!retryAfter(response)) await availabilityFollowup(name);
       return fail();
     }
     // An opt-in, bounded schema comparison deliberately contrasts one legacy
@@ -251,7 +337,8 @@ export async function runGeminiDiagnostic(dependencies: Dependencies = {}) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   let last: DiagnosticRow = { stage: "environment", httpStatus: null, classification: "STARTED", requestsSent: 0 };
   const output = (row: DiagnosticRow) => { last = row; console.log(JSON.stringify(row)); };
-  runGeminiDiagnostic({ report: output, schemaComparison: process.argv.includes("--schema-compare") })
+  runGeminiDiagnostic({ report: output, schemaComparison: process.argv.includes("--schema-compare"),
+    availabilityComparison: process.argv.includes("--availability") })
     .then(result => { process.exitCode = result.ok ? 0 : 1; }).catch(error => {
     // Even an unexpected diagnostic failure retains the last known phase.
     output({ ...last, classification: safeCategory(error, "INTERNAL_DIAGNOSTIC_FAILURE") });

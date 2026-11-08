@@ -1,5 +1,43 @@
 # Gemini 503 payload investigation
 
+## Recurring 503: availability is a separate question
+
+After commit 17112a0, the user reported `json-mode-control: 503` at request one. That control has **no schema** and caps output at **32 tokens**. Capturing the current synthetic diagnostic brief offline measured **883 request bytes** for that control, **1,257 bytes** for the full app request and **349 bytes** for its structural schema. These are source-based synthetic measurements, not the user's private project. The failed control did not exercise either schema or the 16,384-token cap. Earlier 200 results from another time do not establish current availability.
+
+Google's [error reference](https://ai.google.dev/gemini-api/docs/api-errors) describes 503 as temporary overload or service unavailability. The [model page](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite) documents a 65,536-token output limit, above the app's cap. The [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations) gives May 7, 2027 as 3.1 Flash-Lite's earliest shutdown date; that date has not been reached as of 2026-11-08. Neither the supplied 503 nor metadata access establishes a global incident, model shutdown, invalid key, exhausted quota or a need to enable billing.
+
+The [Google AI Studio status dashboard](https://aistudio.google.com/status) is the relevant public service check. The assistant could fetch its shell but could not verify the rendered live incident state from this environment. No current global outage or all-clear is claimed. The private Codespace's key, project-tier/usage details and live generation remain inaccessible here. No production-generation configuration change is justified by the latest evidence.
+
+### One bounded availability pass
+
+Pull the Phase 1 branch, then run this from the repository directory:
+
+```sh
+node --experimental-strip-types scripts/gemini-diagnostic.ts --availability
+```
+
+Use this mode by itself, not together with `--schema-compare`. It has a single **six-HTTP-request total budget**, including metadata calls. No background loop or application retry is added.
+
+- Start with `minimal-current`: the same 3.1 model/key/API version, a tiny harmless prompt, 32 output tokens, no JSON mode, schema or custom temperature.
+- If that first request returns 503, check metadata for **gemini-3.5-flash-lite**, then issue one identical tiny request to it only when the exact model advertises `generateContent`. This branch uses at most **three total HTTP requests** (3.1 generation, alternate metadata, alternate generation), then stops. Google documents a [Standard text free tier](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite) for this exact control model, checked 2026-11-08. The probe does not add it to AutoTube's model catalog, change Settings, replace the key, or enable billing. Metadata still cannot guarantee free quota or generation permission; the single generation control supplies the access result.
+- If the first minimal request succeeds, use the existing staged comparison: app prompt, temperature, JSON mode, current structural schema, then full output cap. A later 503 ends that sequence. If a slot remains, make **one** `minimal-after-failure` control on 3.1, then stop. It repeats the previously successful tiny baseline, not the failed larger/configured request. If the sixth request fails, the budget is exhausted and there is no seventh control.
+- An explicit valid `Retry-After` header stops additional probes. Only the numeric interval is reported, with no automatic waiting/rerun. Other errors (400/401/403/404/429 or network failures) stop normally, without alternate-model probes.
+
+Output remains safe JSON: fixed stage/variant/model names, HTTP status/classification, elapsed milliseconds, request byte counts, token cap, JSON/schema booleans, optional Retry-After seconds and the total `requestsSent`. No key, prompt, generated content, raw response or headers are printed. No SQLite or project data is read or written.
+
+| Observed result | What it narrows; what it does not prove |
+| --- | --- |
+| Tiny 3.1 request 503; alternate tiny request 200 | Suggests model-specific availability/routing/capacity for this key. The same key can generate elsewhere; this does not prove 3.1 is retired or a global incident exists. |
+| Both tiny model requests 503 | Supports a broader service/path/shared-project-capacity issue. One key and two models cannot establish a Google-wide outage. Check public status and the existing project's read-only usage/status view. |
+| Alternate metadata or access fails | The cross-model comparison is inconclusive. Do not change keys or billing to force it. |
+| A configured stage 503; following tiny control 200 | Associates failure with that request profile in this pass; changing load between requests remains possible. |
+| A configured stage 503; following tiny control also 503 | Availability changed during the run; blaming that setting alone is unsupported. |
+| Only full-cap request 503 | Associates the failure with the full-budget profile, but 16,384 is a valid published cap. The six-call budget prevents an extra final control, so a transient failure remains possible. |
+| Schema 400 | The separate schema rejection path; use safe field diagnostics once service accepts the controls. |
+| All configured stages 200 | The synthetic profile works at that time. This does not verify every real topic/duration or eliminate intermittent load. |
+
+Share the JSON from **one pass**. Do not run either comparison in a loop. Live findings are required before changing the app's model or output settings; automated fixtures are not evidence of Google's current availability.
+
 ## Current finding: schema-stage HTTP 400
 
 The user completed the live comparison with the same model/key: app prompt, temperature and JSON MIME mode returned HTTP 200, while adding the full Zod `responseJsonSchema` returned HTTP 400 at request five. This establishes rejection at the schema step for that comparison, rather than an output-token-limit failure (the failing stage still used 32 tokens). It does **not** identify which inner keyword was rejected, or establish that the earlier HTTP 503 had the same cause.

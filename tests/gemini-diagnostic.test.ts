@@ -281,3 +281,90 @@ it("distinguishes rejection of the outer request field from an inner schema keyw
   expect(h.rows.at(-1)).not.toHaveProperty("schema");
   privateOutput(h.rows);
 });
+
+const controlResource = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite";
+it.each([200, 503, 429])("uses one metadata request and one same-key alternate-model control after a minimal 503; control status=%s", async status => {
+  const h = harness();
+  h.transport.mockImplementation(async (url) => {
+    if (url === endpoint) return Response.json({ error: { message: `${key} ${marker}` } }, { status: 503 });
+    if (url === controlResource) return Response.json({ name: "models/gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent"], description: marker });
+    return Response.json({ text: marker }, { status });
+  });
+  expect(await runGeminiDiagnostic({ ...h.dependencies, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 3 });
+  expect(h.transport.mock.calls.map(([url]) => url)).toEqual([endpoint, controlResource, `${controlResource}:generateContent`]);
+  expect(h.transport.mock.calls[1][1].method).toBe("GET");
+  const first = h.transport.mock.calls[0][1];
+  const control = h.transport.mock.calls[2][1];
+  expect(control.body).toBe(first.body);
+  for (const [, init] of h.transport.mock.calls) expect(new Headers(init.headers).get("x-goog-api-key")).toBe(key);
+  expect(h.rows.at(-1)).toMatchObject({ model: "gemini-3.5-flash-lite", variant: "alternate-model-minimal", httpStatus: status, requestsSent: 3 });
+  expect(h.rows.at(-1)?.profile).toEqual({ requestBytes: Buffer.byteLength(first.body), maxOutputTokens: 32, jsonMode: false, schema: false });
+  privateOutput(h.rows);
+});
+
+it.each(["missing-method", "http-error", "network"])("stops the alternate-model check when metadata is unusable: %s", async failure => {
+  const h = harness();
+  h.transport.mockImplementation(async url => {
+    if (url === endpoint) return Response.json({}, { status: 503 });
+    if (failure === "network") throw secretError("ENOTFOUND");
+    if (failure === "http-error") return Response.json({ error: { message: marker } }, { status: 403 });
+    return Response.json({ name: "models/gemini-3.5-flash-lite", supportedGenerationMethods: ["embedContent"] });
+  });
+  expect(await runGeminiDiagnostic({ ...h.dependencies, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 2 });
+  expect(h.transport).toHaveBeenCalledTimes(2);
+  expect(h.rows).toContainEqual(expect.objectContaining({ variant: "minimal-current", httpStatus: 503 }));
+  privateOutput(h.rows);
+});
+
+it.each([200, 503])("makes one tiny same-model control after a later 503, not a retry of the failing profile: %s", async status => {
+  const h = harness();
+  let count = 0;
+  h.transport.mockImplementation(async () => Response.json({}, { status: ++count === 4 ? 503 : count === 5 ? status : 200 }));
+  expect(await runGeminiDiagnostic({ ...h.dependencies, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 5 });
+  expect(h.transport.mock.calls[4][1].body).toBe(h.transport.mock.calls[0][1].body);
+  expect(h.transport.mock.calls[4][1].body).not.toBe(h.transport.mock.calls[3][1].body);
+  expect(h.rows.at(-1)).toMatchObject({ variant: "minimal-after-failure", httpStatus: status, requestsSent: 5 });
+  privateOutput(h.rows);
+});
+
+it("keeps the global six-request cap when the full output-cap profile fails", async () => {
+  const h = harness();
+  let count = 0;
+  h.transport.mockImplementation(async () => Response.json({}, { status: ++count === 6 ? 503 : 200 }));
+  expect(await runGeminiDiagnostic({ ...h.dependencies, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 6 });
+  expect(h.transport).toHaveBeenCalledTimes(6);
+  expect(h.rows.at(-1)).toMatchObject({ variant: "actual-app-settings", httpStatus: 503, profile: { maxOutputTokens: 16384, schema: true, jsonMode: true } });
+  privateOutput(h.rows);
+});
+
+it.each(["120", new Date(Date.now() + 120000).toUTCString()])("honors Retry-After by stopping without another request: %s", async delay => {
+  const h = harness();
+  h.transport.mockImplementation(async () => Response.json({}, { status: 503, headers: { "Retry-After": delay } }));
+  expect(await runGeminiDiagnostic({ ...h.dependencies, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 1 });
+  expect(h.transport).toHaveBeenCalledTimes(1);
+  expect(h.rows.at(-1)?.retryAfterSeconds).toBeGreaterThan(0);
+  privateOutput(h.rows);
+});
+
+it("rejects conflicting diagnostic modes before setup or network requests", async () => {
+  const h = harness();
+  expect(await runGeminiDiagnostic({ ...h.dependencies, schemaComparison: true, availabilityComparison: true })).toEqual({ ok: false, requestsSent: 0 });
+  expect(h.rows.at(-1)?.classification).toBe("OPTIONS_CONFLICT");
+  expect(h.dependencies.loadEnvironment).not.toHaveBeenCalled();
+  expect(h.transport).not.toHaveBeenCalled();
+});
+
+it("runs the real availability CLI with mocked first-model failure and alternate-model success", async () => {
+  const script = fileURLToPath(new URL("../scripts/gemini-diagnostic.ts", import.meta.url));
+  const mock = new URL("./helpers/diagnostic-fetch.mjs", import.meta.url).href;
+  const result = await promisify(execFile)(process.execPath, ["--experimental-strip-types", script, "--availability"], {
+    cwd: tmpdir(), timeout: 30000,
+    env: { ...process.env, GEMINI_API_KEY: "diagnostic-fixture-key", NODE_OPTIONS: `--import=${mock}`, DIAGNOSTIC_FIXTURE_AVAILABILITY: "1", DIAGNOSTIC_FIXTURE_SCHEMA_REJECT: "0" },
+  }).then(value => ({ ...value, code: 0 })).catch(error => ({ stdout: String(error.stdout || ""), stderr: String(error.stderr || ""), code: error.code }));
+  expect(result.code).toBe(1); // The original model remains unavailable.
+  const rows: DiagnosticRow[] = result.stdout.trim().split("\n").map(line => JSON.parse(line));
+  expect(rows).toContainEqual(expect.objectContaining({ variant: "minimal-current", httpStatus: 503 }));
+  expect(rows.at(-1)).toMatchObject({ variant: "alternate-model-minimal", httpStatus: 200, requestsSent: 3 });
+  expect(result.stdout + result.stderr).not.toContain("diagnostic-fixture-key");
+  expect(result.stdout + result.stderr).not.toContain("SECRET_RAW_RESPONSE");
+}, 35000);
