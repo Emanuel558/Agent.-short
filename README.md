@@ -131,6 +131,10 @@ If you see **Cross-site requests are not allowed**, generation has not reached a
 
 ## Validation (inside Codespaces)
 
+The sidebar and workspace content scroll separately. Settings stays below the scrolling navigation. On narrow screens, use the top-left menu button. Interface text uses 14–16px sizes (with larger headings); the miniature dashboard illustration is decorative.
+
+To check the layout in your browser, shorten the window to about 500px high and use a wheel or touchpad over each scroll area. Tab to **Navigation items** or **Workspace content**, then press Page Down; Tab through navigation buttons to bring each into view. Check Settings remains reachable. Use browser responsive mode at 320px and 390px widths to review the mobile menu, project cards, script editor and Settings without sideways page scrolling. The browser suite includes these checks in `tests/e2e/layout.spec.ts`.
+
 ```sh
 npm test
 npm run typecheck

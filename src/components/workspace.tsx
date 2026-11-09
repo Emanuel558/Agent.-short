@@ -150,6 +150,10 @@ export function Workspace() {
   const [error, setError] = useState("");
   const [mobile, setMobile] = useState(false);
   const dirty = useRef(false);
+  const content = useRef<HTMLElement>(null);
+  useEffect(() => {
+    content.current?.scrollTo({ top: 0 });
+  }, [view, projectId]);
   const refresh = useCallback(async () => {
     try {
       const [p, info] = await Promise.all([
@@ -192,7 +196,10 @@ export function Workspace() {
           onClick={() => setMobile(false)}
         />
       )}
-      <aside className={`sidebar ${mobile ? "open" : ""}`}>
+      <aside
+        id="workspace-navigation"
+        className={`sidebar ${mobile ? "open" : ""}`}
+      >
         <button
           className="brand"
           onClick={() => go("dashboard")}
@@ -205,34 +212,57 @@ export function Workspace() {
             AutoTube<span className="brand-ai"> AI</span>
           </span>
         </button>
-        <div className="workspace-label">CREATOR WORKSPACE</div>
-        <nav aria-label="Main navigation">
-          {navigation.map((item, i) => (
-            <div key={item.id} className={i === 8 ? "nav-separator" : ""}>
-              <button
-                className={`nav-item ${view === item.id ? "active" : ""}`}
-                onClick={() => go(item.id)}
-                aria-current={view === item.id ? "page" : undefined}
-              >
-                <item.icon size={18} />
-                <span>{item.label}</span>
-                {item.phase && <LockKeyhole className="nav-lock" size={12} />}
-                {item.id === "create" && <span className="nav-new">NEW</span>}
+        <nav className="sidebar-navigation" aria-label="Main navigation">
+          <div
+            className="sidebar-scroll"
+            role="region"
+            aria-label="Navigation items"
+            tabIndex={0}
+          >
+            <div className="workspace-label">CREATOR WORKSPACE</div>
+            {navigation
+              .filter((item) => item.id !== "settings")
+              .map((item, i) => (
+                <div key={item.id} className={i === 8 ? "nav-separator" : ""}>
+                  <button
+                    className={`nav-item ${view === item.id ? "active" : ""}`}
+                    onClick={() => go(item.id)}
+                    aria-current={view === item.id ? "page" : undefined}
+                  >
+                    <item.icon size={18} />
+                    <span>{item.label}</span>
+                    {item.phase && (
+                      <LockKeyhole className="nav-lock" size={12} />
+                    )}
+                    {item.id === "create" && (
+                      <span className="nav-new">NEW</span>
+                    )}
+                  </button>
+                </div>
+              ))}
+            <div className="build-card">
+              <span className="tiny-label">
+                <span className="live-dot" /> PHASE 1 WORKSPACE
+              </span>
+              <p>Big ideas. First drafts.</p>
+              <span>Build your next story, scene by scene.</span>
+              <button onClick={() => go("create")}>
+                Start creating <ArrowUpRight />
               </button>
             </div>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="build-card">
-            <span className="tiny-label">
-              <span className="live-dot" /> PHASE 1 WORKSPACE
-            </span>
-            <p>Big ideas. First drafts.</p>
-            <span>Build your next story, scene by scene.</span>
-            <button onClick={() => go("create")}>
-              Start creating <ArrowUpRight />
+          </div>
+          <div className="sidebar-settings">
+            <button
+              className={`nav-item ${view === "settings" ? "active" : ""}`}
+              onClick={() => go("settings")}
+              aria-current={view === "settings" ? "page" : undefined}
+            >
+              <Settings2 size={18} />
+              <span>Settings</span>
             </button>
           </div>
+        </nav>
+        <div className="sidebar-bottom">
           <div className="profile">
             <span className="avatar">C</span>
             <div>
@@ -249,6 +279,8 @@ export function Workspace() {
             <button
               className="icon-button mobile-menu"
               aria-label="Open navigation"
+              aria-expanded={mobile}
+              aria-controls="workspace-navigation"
               onClick={() => setMobile(true)}
             >
               <Menu size={20} />
@@ -271,7 +303,12 @@ export function Workspace() {
             <span className="avatar small">C</span>
           </div>
         </header>
-        <main className="main-content">
+        <main
+          className="main-content"
+          ref={content}
+          tabIndex={0}
+          aria-label="Workspace content"
+        >
           {error && (
             <Alert>
               {error} <button onClick={() => void refresh()}>Retry</button>

@@ -2,6 +2,8 @@
 
 Run in a private GitHub Codespace using the README. No API key is needed.
 
+For the Phase 1 layout, check 14–16px interface text and larger headings at 320px, 390px, 1024px and desktop widths. Shorten the window to 480–500px: scroll navigation with a wheel/touchpad or focus it and use Page Down. Tab through every navigation button; Settings stays pinned. Scroll main content separately, then check Settings, project cards, narration and scene plans for horizontal overflow. `tests/e2e/layout.spec.ts` automates these layout checks with isolated demo projects.
+
 | Requirement                  | How to review                                                                                                                                     |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Dashboard and sidebar        | Open Dashboard at desktop and narrow mobile widths. Empty accounts show zero real project counts.                                                 |
